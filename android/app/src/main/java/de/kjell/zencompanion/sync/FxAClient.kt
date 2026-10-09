@@ -78,7 +78,8 @@ class FxAClient(
             .put("client_id", OAUTH_CLIENT_ID)
             .put("grant_type", "fxa-credentials")
             .put("scope", OLD_SYNC_SCOPE)
-            .put("access_type", "offline")
+            // No refresh token: the app re-runs this grant when it needs one.
+            .put("access_type", "online")
         val urls = listOf(
             URL("https://oauth.accounts.firefox.com/v1/token"),
             URL("$authBase/oauth/token"),
@@ -94,6 +95,20 @@ class FxAClient(
             }
         }
         throw SyncError.Auth(last)
+    }
+
+    /**
+     * Ends this app's own FxA session on the server, so a signed-out device no
+     * longer holds a valid token. Best effort at sign-out.
+     */
+    suspend fun destroySession(sessionToken: String) {
+        hawkJSON(
+            url = URL("$authBase/session/destroy"),
+            method = "POST",
+            token = FxACrypto.unhex(sessionToken),
+            tokenType = "sessionToken",
+            json = JSONObject(),
+        )
     }
 
     private suspend fun hawkJSON(

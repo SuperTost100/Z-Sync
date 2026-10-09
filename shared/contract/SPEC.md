@@ -43,7 +43,8 @@ an implementation conforms only if it reproduces `expect` exactly.
 ## 1. Scope and terminology
 
 Scope: reading and writing Zen's `spaces` Sync collection, the `prefs` record that
-carries `zen.spaces-sync.normal-tabs`, the `crypto/keys` collection-key bootstrap, the
+carries `zen.spaces-sync.normal-tabs`, the `meta/global` write gate (§7.5), the
+`crypto/keys` collection-key bootstrap, the
 PICL/FxA key derivations behind them, Hawk authentication for Sync storage requests,
 and BSO id/URL encoding.
 
@@ -473,16 +474,26 @@ timestamp string in the same format as `X-Last-Modified` (e.g. `"1700000000.00"`
 - **Missing timestamp = 0 (create-if-absent).** A BSO with no server timestamp is
   treated as timestamp `0`, so `X-If-Unmodified-Since: "0"` creates the record
   only if it does not already exist; if it exists, the server responds 412.
-- **Atomic multi-record POST.** `POST /storage/<collection>` with
-  `X-If-Unmodified-Since` conditions the whole batch on the collection timestamp.
+- **Multi-record POST.** `POST /storage/<collection>` with
+  `X-If-Unmodified-Since` conditions the whole request on the collection timestamp.
   There is no per-BSO condition inside the POST body: every record in one POST
-  shares the single collection-level condition. A 200 response body reports the
-  per-record outcome:
+  shares the single collection-level condition. The condition is all-or-nothing (a
+  412 writes no record), but the records are not: the server validates and stores
+  each one separately, so a 200 can apply some records and reject others. The
+  response body reports the per-record outcome:
   `{"modified": <timestamp>, "success": [<id>, …], "failed": {<id>: <reason>, …}}`.
+  A requested id that is in `failed` or missing from `success` was not written.
 - **Expected client behavior.** On 412 the client SHOULD re-read the target (GET for
   a collection, GET/HEAD for a BSO), merge the server state, retry the write
   **once** with the fresh `X-Last-Modified` value as the new condition, and surface
-  a conflict to the caller if the retry also fails. The retry MUST NOT loop.
+  a conflict to the caller if the retry also fails. The retry MUST NOT loop. A
+  partial POST outcome is handled the same way: re-read, recompute the same
+  semantic edit against the fresh state, and retry once. Edits MUST be idempotent
+  for this to be safe (reuse the same new record id, union rather than append).
+- **Collection without a timestamp.** When the read that plans a conditional POST
+  returns no `X-Last-Modified` (for example a 404 on a collection that does not
+  exist yet), the client MUST send `X-If-Unmodified-Since: "0"` rather than drop
+  the condition.
 - **Legacy unconditional writes.** Omitting the header performs an unconditional
   write, exactly as before this section. Servers MUST continue to accept it and
   clients MUST NOT require conditional support; conditional writes are an additive,
@@ -552,6 +563,42 @@ de-duplicated by URL across buckets, first occurrence winning, because the same 
 is commonly stored once per container bucket; a genuine duplicate within a single
 bucket is preserved.
 
+
+### 7.5 Write preconditions
+
+These rules apply to every write to `spaces`, in both the conditional and the legacy
+path. A client that cannot meet one MUST refuse the whole write and change nothing.
+
+1. **Engine version gate (`wire-meta-global-write-gate`).** Before writing, read
+   `GET /storage/meta/global`. Its `payload` is a plain JSON string, not an envelope.
+   Writes are allowed when the record is absent or has no payload. Otherwise the
+   payload MUST parse as a JSON object; when it has `storageVersion`, that MUST be the
+   number `5`; when it has an `engines` member, that MUST be an object; when
+   `engines` has a `spaces` member, it MUST be an object whose `version` is a JSON
+   number no greater than `3`, the Zen Spaces engine version this contract
+   describes. Anything else blocks writes.
+2. **Complete read.** The read that plans a write MUST be complete: every page parsed
+   as a JSON array and pagination ended because the server signalled no next offset,
+   not because a page cap was hit. A malformed page is an error for reads too; it is
+   never treated as an empty page.
+3. **Present parent.** The space (or folder) that a new tab attaches to MUST come
+   from that read. A client MUST NOT build a parent record from a local cache or any
+   other source. If the target space's record is absent or deleted, the write fails
+   as "target missing". If it is present but does not decrypt, the write fails as an
+   incomplete read.
+4. **Deletes see everything.** A delete rewrites every parent that references the
+   removed id, so it MUST refuse when any record in the planning read fails to
+   decrypt.
+5. **Preserve what you don't own.** A rewritten record starts from its decrypted
+   cleartext. Only the edited `data` fields change; unknown top-level fields and
+   unknown `data` fields (for example a folder's `live` object) are written back
+   unchanged. When an edited list such as `children` holds non-string entries, the
+   string entries are kept in order and the rest are dropped, matching the read rule
+   in §3.1.
+6. **Key records.** Each `crypto/keys` bundle MUST be an array of at least two
+   base64 strings that decode to 32 bytes each; anything else is a crypto error, not
+   a crash.
+
 ---
 
 ## 8. Explicitly non-contractual
@@ -618,6 +665,15 @@ fixtures, but fixtures do not pin them and future work SHOULD remove them:
 ---
 
 ## 11. Changelog
+
+- **2026-10-09 — Write preconditions.** Added §7.5: a `meta/global` engine-version
+  gate (fixture `wire-meta-global-write-gate`), complete planning reads, no
+  synthesized parents, fail-closed deletes on undecryptable records, preservation of
+  unknown cleartext fields, and key-record validation. §7.2 now states that a
+  multi-record POST is conditioned as a whole but applied per record, that partial
+  outcomes are retried once like a 412, and that a missing collection timestamp is
+  sent as `"0"`. Contract-Version stays 1: the wire format is unchanged and the new
+  rules only make clients refuse unsafe writes.
 
 - **2026-10-04 — Essentials merge de-duplication by URL.** When merging essentials
   buckets for shared display, entries are now de-duplicated by URL across buckets

@@ -105,6 +105,12 @@ final class FaviconLoader: @unchecked Sendable {
         return URLSession(configuration: config)
     }()
 
+    /// Drops every cached icon, in memory and on disk (sign-out).
+    func removeAll() {
+        cache.removeAllObjects()
+        Self.session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
     func cached(_ url: URL) -> UIImage? {
         cache.object(forKey: url as NSURL)
     }

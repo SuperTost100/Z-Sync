@@ -75,6 +75,9 @@
     <string name="error_crypto">Your sync data couldn\'t be decrypted. Sign out and back in to refresh your keys.</string>
     <string name="error_network">Network problem while contacting Mozilla sync.</string>
     <string name="error_conflict">Another device changed this data at the same time. Please try again.</string>
+    <string name="error_target_missing">This space isn\'t in Zen anymore. Pull to refresh and pick another one.</string>
+    <string name="error_incomplete_read">Z-Sync couldn\'t read all of your Zen data, so it didn\'t change anything. Pull to refresh and try again.</string>
+    <string name="error_unsupported_sync_version">Zen changed how it syncs spaces. Update Z-Sync before making changes from your phone.</string>
     <string name="error_not_signed_in">Sign in to Z-Sync first.</string>
     <string name="error_totp">A confirmation code is required.</string>
     <string name="error_storage_unavailable">Couldn\'t save your sign-in securely on this device. Please try again.</string>

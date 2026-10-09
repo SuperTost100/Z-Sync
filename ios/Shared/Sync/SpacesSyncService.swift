@@ -49,8 +49,7 @@ enum SpacesSyncService {
             cache(cached)
             return cached
         }
-        let client = try await AccountStore.connect()
-        return try await loadSnapshot(client: client)
+        return try await AccountStore.withClient { try await loadSnapshot(client: $0) }
     }
 
     static func loadSnapshot(client: SyncClient) async throws -> ZenSnapshot {
@@ -450,8 +449,9 @@ enum SpacesSyncService {
         if AccountStore.isDemo {
             return addTabLocally(url: url, title: title, to: spaceId, folderId: folderId, kind: kind)
         }
-        let client = try await AccountStore.connect()
-        return try await addTab(client: client, url: url, title: title, to: spaceId, folderId: folderId, kind: kind)
+        return try await AccountStore.withClient {
+            try await addTab(client: $0, url: url, title: title, to: spaceId, folderId: folderId, kind: kind)
+        }
     }
 
     @discardableResult
@@ -463,6 +463,7 @@ enum SpacesSyncService {
         folderId: String? = nil,
         kind requestedKind: SaveKind = .pinned
     ) async throws -> AddTabOutcome {
+        try await ensureWritable(client: client)
         // Live safety gate (SPEC §7): a normal write re-reads the synced prefs
         // and falls back to pinned unless the capability is `enabled`. A
         // transient/unreadable prefs read counts as not enabled. Pinned writes
@@ -496,6 +497,52 @@ enum SpacesSyncService {
         return AddTabOutcome(recordId: recordId, kind: kind, fellBackToPinned: fellBack)
     }
 
+    /// Highest Zen Spaces engine version this contract describes (SPEC §7.5).
+    static let supportedSpacesEngineVersion = 3
+
+    /// SPEC §7.5 write gate over the plain-JSON `meta/global` payload
+    /// (fixture `wire-meta-global-write-gate`). An absent record allows
+    /// writes; anything this app cannot vouch for blocks them.
+    static func metaGlobalAllowsWrites(payload: String?) -> Bool {
+        guard let payload else { return true }
+        guard let data = payload.data(using: .utf8),
+              let meta = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return false }
+        func number(_ raw: Any?) -> Double? {
+            guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+            return n.doubleValue
+        }
+        if meta["storageVersion"] != nil, number(meta["storageVersion"]) != 5 { return false }
+        guard let enginesRaw = meta["engines"] else { return true }
+        guard let engines = enginesRaw as? [String: Any] else { return false }
+        guard let spacesRaw = engines["spaces"] else { return true }
+        guard let spaces = spacesRaw as? [String: Any],
+              let version = number(spaces["version"])
+        else { return false }
+        return version <= Double(supportedSpacesEngineVersion)
+    }
+
+    private static func ensureWritable(client: SyncClient) async throws {
+        guard metaGlobalAllowsWrites(payload: try await client.metaGlobalPayload()) else {
+            throw SyncError.unsupportedSyncVersion
+        }
+    }
+
+    /// String entries of a raw JSON list, in order. Other entries are dropped
+    /// and a missing or non-array value reads as empty (SPEC §3.1, §7.5).
+    static func stringEntries(_ raw: Any?) -> [String] {
+        (raw as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    /// A decrypted record with new `data`, keeping every other top-level
+    /// field it carried (SPEC §7.5).
+    private static func rewritten(_ cleartext: [String: Any], id: String, data: [String: Any]) -> [String: Any] {
+        var out = cleartext
+        out["id"] = id
+        out["data"] = data
+        return out
+    }
+
     /// Legacy sequential write path (safe-sync OFF).
     private static func addTabLegacy(
         client: SyncClient,
@@ -506,17 +553,14 @@ enum SpacesSyncService {
         kind: SaveKind
     ) async throws -> String {
         let spaceRecords = try await client.getRecords(collection: collection)
-        let target = await resolveAddTarget(
+        let target = try await resolveAddTarget(
             client: client,
             records: spaceRecords,
             spaceId: spaceId,
             folderId: folderId,
             kind: kind
         )
-        let targetSpaceData = target.spaceData
-        let containerGuid = target.containerGuid
-        let targetFolderRecordId = target.folderRecordId
-        let targetFolderData = target.folderData
+        let attachedFolderId = target.folder != nil ? folderId : nil
 
         let recordId = UUID().uuidString.lowercased()
         let tabCleartext = makeTabCleartext(
@@ -524,8 +568,8 @@ enum SpacesSyncService {
             url: url,
             title: title,
             spaceId: spaceId,
-            containerGuid: containerGuid,
-            folderId: targetFolderData != nil ? folderId : nil,
+            containerGuid: target.containerGuid,
+            folderId: attachedFolderId,
             kind: kind
         )
 
@@ -535,29 +579,8 @@ enum SpacesSyncService {
         // 2. Update the parent record's children so Zen Desktop places the
         //    tab: the folder record when a folder was chosen, otherwise the
         //    space record itself.
-        if let folderData = targetFolderData, let folderRecordId = targetFolderRecordId {
-            var fData = folderData
-            fData["children"] = SpacesSyncEdits.attaching(
-                recordId,
-                to: fData["children"] as? [String] ?? [],
-                kind: kind,
-                pinnedIds: []
-            )
-            try await putCleartext(client: client, id: folderRecordId, kind: "folder", data: fData)
-        } else if var sData = targetSpaceData {
-            sData["children"] = SpacesSyncEdits.attaching(
-                recordId,
-                to: sData["children"] as? [String] ?? [],
-                kind: kind,
-                pinnedIds: cachedPinnedIds(in: spaceId)
-            )
-            let spaceCleartext: [String: Any] = [
-                "id": spaceId,
-                "kind": "space",
-                "data": sData
-            ]
-            try await client.putRecord(collection: collection, id: spaceId, object: spaceCleartext)
-        }
+        let parent = target.parentWrite(attaching: recordId, kind: kind, pinnedIds: cachedPinnedIds(in: spaceId))
+        try await client.putRecord(collection: collection, id: parent.id, object: parent.cleartext)
 
         // 3. Update the local cache immediately
         cacheAddedTab(
@@ -565,7 +588,7 @@ enum SpacesSyncService {
             url: url,
             title: title,
             spaceId: spaceId,
-            folderId: targetFolderData != nil ? folderId : nil,
+            folderId: attachedFolderId,
             kind: kind
         )
 
@@ -574,9 +597,10 @@ enum SpacesSyncService {
     }
 
     /// Conflict-safe add (SPEC §7.2): consistent read with the collection
-    /// timestamp, then one atomic conditional POST carrying the fresh tab and
-    /// the rewritten parent. A 412 re-reads, recomputes the children attach
-    /// against fresh server state, and retries once.
+    /// timestamp, then one conditional POST carrying the fresh tab and the
+    /// rewritten parent. A 412 or a partial outcome re-reads, recomputes the
+    /// children attach against fresh server state, and retries once with the
+    /// same record id, so the retry is idempotent.
     private static func addTabConflictSafe(
         client: SyncClient,
         url: URL,
@@ -588,53 +612,30 @@ enum SpacesSyncService {
         let recordId = UUID().uuidString.lowercased()
         for attempt in 0..<2 {
             let (records, lastModified) = try await client.getCollectionWithMetadata(collection: collection)
-            let target = await resolveAddTarget(
+            let target = try await resolveAddTarget(
                 client: client,
                 records: records,
                 spaceId: spaceId,
                 folderId: folderId,
                 kind: kind
             )
-            let attachedFolderId = target.folderData != nil ? folderId : nil
+            let attachedFolderId = target.folder != nil ? folderId : nil
 
-            var writes = [SyncWriteRecord(
-                id: recordId,
-                cleartext: makeTabCleartext(
-                    recordId: recordId,
-                    url: url,
-                    title: title,
-                    spaceId: spaceId,
-                    containerGuid: target.containerGuid,
-                    folderId: attachedFolderId,
-                    kind: kind
-                )
-            )]
-
-            if let folderData = target.folderData, let folderRecordId = target.folderRecordId {
-                var data = folderData
-                data["children"] = SpacesSyncEdits.attaching(
-                    recordId,
-                    to: data["children"] as? [String] ?? [],
-                    kind: kind,
-                    pinnedIds: []
-                )
-                writes.append(SyncWriteRecord(
-                    id: folderRecordId,
-                    cleartext: ["id": folderRecordId, "kind": "folder", "data": data]
-                ))
-            } else if let spaceData = target.spaceData {
-                var data = spaceData
-                data["children"] = SpacesSyncEdits.attaching(
-                    recordId,
-                    to: data["children"] as? [String] ?? [],
-                    kind: kind,
-                    pinnedIds: cachedPinnedIds(in: spaceId)
-                )
-                writes.append(SyncWriteRecord(
-                    id: spaceId,
-                    cleartext: ["id": spaceId, "kind": "space", "data": data]
-                ))
-            }
+            let writes = [
+                SyncWriteRecord(
+                    id: recordId,
+                    cleartext: makeTabCleartext(
+                        recordId: recordId,
+                        url: url,
+                        title: title,
+                        spaceId: spaceId,
+                        containerGuid: target.containerGuid,
+                        folderId: attachedFolderId,
+                        kind: kind
+                    )
+                ),
+                target.parentWrite(attaching: recordId, kind: kind, pinnedIds: cachedPinnedIds(in: spaceId)),
+            ]
 
             let outcome = try await client.postRecords(
                 collection: collection,
@@ -653,77 +654,104 @@ enum SpacesSyncService {
                 )
                 NotificationCenter.default.post(name: .zenCompanionSnapshotStale, object: nil)
                 return recordId
-            case .preconditionFailed:
+            case .preconditionFailed, .partialFailure:
                 if attempt == 1 { throw SyncError.conflict }
-            case .partialFailure:
-                throw SyncError.conflict
             }
         }
         throw SyncError.conflict
     }
 
-    /// Resolves the space (and optional folder) record a new tab attaches to,
-    /// falling back to the cached snapshot when the live collection lacks the
-    /// space. Shared by the legacy and conflict-safe add paths. A normal tab
-    /// never targets a folder (the contract ignores `folderId` for
-    /// `pinned:false` records).
+    /// The space (and optional folder) a new tab attaches to, as full
+    /// decrypted cleartexts so a rewrite keeps every field it doesn't edit.
+    private struct AddTarget {
+        let spaceId: String
+        let space: [String: Any]
+        let folderRecordId: String?
+        let folder: [String: Any]?
+
+        var containerGuid: String? {
+            (space["data"] as? [String: Any])?["containerGuid"] as? String
+        }
+
+        /// The folder (when one was resolved) or the space, with `recordId`
+        /// attached to its `children`.
+        func parentWrite(attaching recordId: String, kind: SaveKind, pinnedIds: Set<String>) -> SyncWriteRecord {
+            if let folder, let folderRecordId {
+                var data = folder["data"] as? [String: Any] ?? [:]
+                data["children"] = SpacesSyncEdits.attaching(
+                    recordId,
+                    to: SpacesSyncService.stringEntries(data["children"]),
+                    kind: kind,
+                    pinnedIds: []
+                )
+                return SyncWriteRecord(
+                    id: folderRecordId,
+                    cleartext: SpacesSyncService.rewritten(folder, id: folderRecordId, data: data)
+                )
+            }
+            var data = space["data"] as? [String: Any] ?? [:]
+            data["children"] = SpacesSyncEdits.attaching(
+                recordId,
+                to: SpacesSyncService.stringEntries(data["children"]),
+                kind: kind,
+                pinnedIds: pinnedIds
+            )
+            return SyncWriteRecord(id: spaceId, cleartext: SpacesSyncService.rewritten(space, id: spaceId, data: data))
+        }
+    }
+
+    /// Resolves the space (and optional folder) record a new tab attaches to
+    /// from one read. The parent must come from the server: a missing or
+    /// deleted space throws `targetMissing`, an undecryptable one
+    /// `incompleteRead` (SPEC §7.5). A normal tab never targets a folder (the
+    /// contract ignores `folderId` for `pinned:false` records).
     private static func resolveAddTarget(
         client: SyncClient,
         records: [[String: Any]],
         spaceId: String,
         folderId: String?,
         kind: SaveKind
-    ) async -> (
-        spaceData: [String: Any]?,
-        containerGuid: String?,
-        folderRecordId: String?,
-        folderData: [String: Any]?
-    ) {
-        var targetSpaceData: [String: Any]?
-        var containerGuid: String?
-        var targetFolderRecordId: String?
-        var targetFolderData: [String: Any]?
+    ) async throws -> AddTarget {
+        var space: [String: Any]?
+        var spaceUndecryptable = false
+        var folderRecordId: String?
+        var folder: [String: Any]?
 
         let requestedFolderId = kind == .normal ? nil : folderId
         for record in records {
             guard let id = record["id"] as? String else { continue }
-            if let cleartext = try? await client.decryptRecord(collection: collection, record: record),
-               (cleartext["deleted"] as? Bool) != true,
-               let data = cleartext["data"] as? [String: Any] {
-                switch cleartext["kind"] as? String {
-                case "space" where id == spaceId:
-                    targetSpaceData = data
-                    containerGuid = data["containerGuid"] as? String
-                case "folder" where isTargetFolder(folderId: requestedFolderId, data: data):
-                    targetFolderData = data
-                    targetFolderRecordId = id
-                default:
-                    break
-                }
+            guard let cleartext = try? await client.decryptRecord(collection: collection, record: record) else {
+                if id == spaceId { spaceUndecryptable = true }
+                continue
             }
-            if targetSpaceData != nil && (requestedFolderId == nil || targetFolderData != nil) { break }
+            guard (cleartext["deleted"] as? Bool) != true,
+                  let data = cleartext["data"] as? [String: Any]
+            else { continue }
+            switch cleartext["kind"] as? String {
+            case "space" where id == spaceId:
+                space = cleartext
+            case "folder" where isTargetFolder(folderId: requestedFolderId, data: data):
+                folder = cleartext
+                folderRecordId = id
+            default:
+                break
+            }
+            if space != nil && (requestedFolderId == nil || folder != nil) { break }
         }
 
-        // If not found in live records, check cached snapshot as fallback
-        if targetSpaceData == nil, let cached = cachedSnapshot()?.space(id: spaceId) {
-            containerGuid = cached.containerGuid
-            targetSpaceData = [
-                "uuid": cached.id,
-                "name": cached.name,
-                "icon": cached.icon ?? "",
-                "children": (cached.pinned + cached.tabs).map(\.id)
-            ]
+        guard let space else {
+            throw spaceUndecryptable ? SyncError.incompleteRead : SyncError.targetMissing
         }
 
         // The folder must belong to the target space; otherwise fall back to
         // the space root so the tab never lands in an unrelated folder.
-        if let folderData = targetFolderData,
+        if let folderData = folder?["data"] as? [String: Any],
            (folderData["workspaceUuid"] as? String) != spaceId {
-            targetFolderData = nil
-            targetFolderRecordId = nil
+            folder = nil
+            folderRecordId = nil
         }
 
-        return (targetSpaceData, containerGuid, targetFolderRecordId, targetFolderData)
+        return AddTarget(spaceId: spaceId, space: space, folderRecordId: folderRecordId, folder: folder)
     }
 
     private static func makeTabCleartext(
@@ -807,11 +835,11 @@ enum SpacesSyncService {
             NotificationCenter.default.post(name: .zenCompanionSnapshotStale, object: nil)
             return
         }
-        let client = try await AccountStore.connect()
-        try await deleteTab(client: client, id: id)
+        try await AccountStore.withClient { try await deleteTab(client: $0, id: id) }
     }
 
     static func deleteTab(client: SyncClient, id: String) async throws {
+        try await ensureWritable(client: client)
         if safeSyncEnabled {
             try await deleteTabConflictSafe(client: client, id: id)
         } else {
@@ -834,15 +862,15 @@ enum SpacesSyncService {
         NotificationCenter.default.post(name: .zenCompanionSnapshotStale, object: nil)
     }
 
-    /// Conflict-safe delete: one consistent read and one atomic conditional
-    /// POST carrying the complete change set (primary tombstone, collapsing
-    /// split tombstones, parent splices and layout bucket rewrites). A 412
-    /// re-reads and recomputes the same semantic edits against fresh server
-    /// state, retrying once.
+    /// Conflict-safe delete: one consistent read and one conditional POST
+    /// carrying the complete change set (primary tombstone, collapsing split
+    /// tombstones, parent splices and layout bucket rewrites). A 412 or a
+    /// partial outcome re-reads and recomputes the same semantic edits
+    /// against fresh server state, retrying once.
     private static func deleteTabConflictSafe(client: SyncClient, id: String) async throws {
         for attempt in 0..<2 {
             let (records, lastModified) = try await client.getCollectionWithMetadata(collection: collection)
-            let incoming = await decryptedCleartexts(client: client, records: records)
+            let incoming = try await decryptedCleartexts(client: client, records: records)
             let changeSet = deleteChangeSet(id: id, incoming: incoming)
 
             let outcome = try await client.postRecords(
@@ -858,10 +886,8 @@ enum SpacesSyncService {
                         : SpacesSyncEdits.remove(id: id, from: cached))
                 }
                 return
-            case .preconditionFailed:
+            case .preconditionFailed, .partialFailure:
                 if attempt == 1 { throw SyncError.conflict }
-            case .partialFailure:
-                throw SyncError.conflict
             }
         }
         throw SyncError.conflict
@@ -881,13 +907,14 @@ enum SpacesSyncService {
 
     /// Tombstone + rewrite change set for deleting one tab id. Split members
     /// that drop below two members collapse: their tombstone and the parent
-    /// splice are part of the same set, so one POST applies them atomically.
+    /// splice are part of the same set, so one POST applies them together.
     private static func tombstoneChangeSet(tabId: String, incoming: [IncomingCleartext]) -> [SyncWriteRecord] {
         var writes = [tombstoneWrite(id: tabId)]
 
         var collapsedRemaining: [String: [String]] = [:]
         for rec in incoming where rec.id != tabId && rec.kind == "split" {
-            guard let tabs = rec.data["tabs"] as? [String], tabs.contains(tabId) else { continue }
+            let tabs = stringEntries(rec.data["tabs"])
+            guard tabs.contains(tabId) else { continue }
             let remaining = tabs.filter { $0 != tabId }
             if remaining.count < 2 {
                 collapsedRemaining[rec.id] = remaining
@@ -895,14 +922,14 @@ enum SpacesSyncService {
             } else {
                 var data = rec.data
                 data["tabs"] = remaining
-                writes.append(rewrittenWrite(id: rec.id, kind: "split", data: data))
+                writes.append(rewrittenWrite(rec, data: data))
             }
         }
 
         for rec in incoming where rec.id != tabId && rec.kind != "split" {
             switch rec.kind {
             case "space", "folder":
-                let children = rec.data["children"] as? [String] ?? []
+                let children = stringEntries(rec.data["children"])
                 let touchesTab = children.contains(tabId)
                 let touchesCollapsedSplit = collapsedRemaining.keys.contains { children.contains($0) }
                 guard touchesTab || touchesCollapsedSplit else { continue }
@@ -912,19 +939,20 @@ enum SpacesSyncService {
                 }
                 var data = rec.data
                 data["children"] = next
-                writes.append(rewrittenWrite(id: rec.id, kind: rec.kind ?? "", data: data))
+                writes.append(rewrittenWrite(rec, data: data))
             case "layout":
                 guard var essentials = rec.data["essentials"] as? [String: Any] else { continue }
                 var changed = false
                 for (bucket, raw) in essentials {
-                    guard let ids = raw as? [String], ids.contains(tabId) else { continue }
+                    let ids = stringEntries(raw)
+                    guard ids.contains(tabId) else { continue }
                     essentials[bucket] = ids.filter { $0 != tabId }
                     changed = true
                 }
                 guard changed else { continue }
                 var data = rec.data
                 data["essentials"] = essentials
-                writes.append(rewrittenWrite(id: rec.id, kind: "layout", data: data))
+                writes.append(rewrittenWrite(rec, data: data))
             default:
                 continue
             }
@@ -935,13 +963,14 @@ enum SpacesSyncService {
 
     /// Tombstone the split + splice its members into every parent `children`.
     private static func unsplitChangeSet(splitId: String, incoming: [IncomingCleartext]) -> [SyncWriteRecord] {
-        let members = incoming.first { $0.id == splitId }?.data["tabs"] as? [String] ?? []
+        let members = stringEntries(incoming.first { $0.id == splitId }?.data["tabs"])
         var writes = [tombstoneWrite(id: splitId)]
         for rec in incoming where rec.id != splitId && (rec.kind == "space" || rec.kind == "folder") {
-            guard let children = rec.data["children"] as? [String], children.contains(splitId) else { continue }
+            let children = stringEntries(rec.data["children"])
+            guard children.contains(splitId) else { continue }
             var data = rec.data
             data["children"] = SpacesSyncEdits.replacing(splitId, with: members, in: children)
-            writes.append(rewrittenWrite(id: rec.id, kind: rec.kind ?? "", data: data))
+            writes.append(rewrittenWrite(rec, data: data))
         }
         return writes
     }
@@ -950,8 +979,8 @@ enum SpacesSyncService {
         SyncWriteRecord(id: id, cleartext: ["id": id, "deleted": true])
     }
 
-    private static func rewrittenWrite(id: String, kind: String, data: [String: Any]) -> SyncWriteRecord {
-        SyncWriteRecord(id: id, cleartext: ["id": id, "kind": kind, "data": data])
+    private static func rewrittenWrite(_ rec: IncomingCleartext, data: [String: Any]) -> SyncWriteRecord {
+        SyncWriteRecord(id: rec.id, cleartext: rewritten(rec.cleartext, id: rec.id, data: data))
     }
 
     private struct IncomingCleartext {
@@ -963,15 +992,18 @@ enum SpacesSyncService {
 
     private static func decryptedCollection(client: SyncClient) async throws -> [IncomingCleartext] {
         let records = try await client.getRecords(collection: collection)
-        return await decryptedCleartexts(client: client, records: records)
+        return try await decryptedCleartexts(client: client, records: records)
     }
 
-    private static func decryptedCleartexts(client: SyncClient, records: [[String: Any]]) async -> [IncomingCleartext] {
+    /// Every live record of a delete's planning read. A delete rewrites every
+    /// parent that references the removed id, so one undecryptable record
+    /// refuses the whole write (SPEC §7.5).
+    private static func decryptedCleartexts(client: SyncClient, records: [[String: Any]]) async throws -> [IncomingCleartext] {
         var out: [IncomingCleartext] = []
         for rec in records {
             guard let recId = rec["id"] as? String else { continue }
             guard let cleartext = try? await client.decryptRecord(collection: collection, record: rec) else {
-                continue
+                throw SyncError.incompleteRead
             }
             if (cleartext["deleted"] as? Bool) == true { continue }
             out.append(IncomingCleartext(id: recId, cleartext: cleartext))
@@ -987,7 +1019,7 @@ enum SpacesSyncService {
         splitId: String,
         incoming: [IncomingCleartext]
     ) async throws {
-        let members = incoming.first { $0.id == splitId }?.data["tabs"] as? [String] ?? []
+        let members = stringEntries(incoming.first { $0.id == splitId }?.data["tabs"])
         try await client.putTombstone(collection: collection, id: splitId)
         try await replaceChild(
             client: client,
@@ -1010,29 +1042,32 @@ enum SpacesSyncService {
             var data = rec.data
             switch rec.kind {
             case "space", "folder":
-                guard let children = data["children"] as? [String], children.contains(tabId) else { continue }
+                let children = stringEntries(data["children"])
+                guard children.contains(tabId) else { continue }
                 data["children"] = SpacesSyncEdits.removing(tabId, from: children)
-                try await putCleartext(client: client, id: rec.id, kind: rec.kind ?? "", data: data)
+                try await putCleartext(client: client, rec, data: data)
             case "split":
-                guard let tabs = data["tabs"] as? [String], tabs.contains(tabId) else { continue }
+                let tabs = stringEntries(data["tabs"])
+                guard tabs.contains(tabId) else { continue }
                 let remaining = tabs.filter { $0 != tabId }
                 if remaining.count < 2 {
                     collapsingSplits.append((rec.id, remaining))
                 } else {
                     data["tabs"] = remaining
-                    try await putCleartext(client: client, id: rec.id, kind: "split", data: data)
+                    try await putCleartext(client: client, rec, data: data)
                 }
             case "layout":
                 guard var essentials = data["essentials"] as? [String: Any] else { continue }
                 var changed = false
                 for (bucket, raw) in essentials {
-                    guard let ids = raw as? [String], ids.contains(tabId) else { continue }
+                    let ids = stringEntries(raw)
+                    guard ids.contains(tabId) else { continue }
                     essentials[bucket] = ids.filter { $0 != tabId }
                     changed = true
                 }
                 if changed {
                     data["essentials"] = essentials
-                    try await putCleartext(client: client, id: rec.id, kind: "layout", data: data)
+                    try await putCleartext(client: client, rec, data: data)
                 }
             default:
                 break
@@ -1060,22 +1095,22 @@ enum SpacesSyncService {
             guard rec.id != oldId else { continue }
             guard rec.kind == "space" || rec.kind == "folder" else { continue }
             var data = rec.data
-            guard let children = data["children"] as? [String], children.contains(oldId) else { continue }
+            let children = stringEntries(data["children"])
+            guard children.contains(oldId) else { continue }
             data["children"] = SpacesSyncEdits.replacing(oldId, with: replacements, in: children)
-            try await putCleartext(client: client, id: rec.id, kind: rec.kind ?? "", data: data)
+            try await putCleartext(client: client, rec, data: data)
         }
     }
 
     private static func putCleartext(
         client: SyncClient,
-        id: String,
-        kind: String,
+        _ rec: IncomingCleartext,
         data: [String: Any]
     ) async throws {
         try await client.putRecord(
             collection: collection,
-            id: id,
-            object: ["id": id, "kind": kind, "data": data]
+            id: rec.id,
+            object: rewritten(rec.cleartext, id: rec.id, data: data)
         )
     }
 
@@ -1095,13 +1130,13 @@ enum SpacesSyncService {
     static func cache(_ snapshot: ZenSnapshot) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         var url = cacheURL
-        do {
-            // Device-local only (SPEC §8): keep tab data out of iCloud backups.
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try url.setResourceValues(values)
-        } catch {}
-        try? data.write(to: cacheURL, options: [.atomic, .completeFileProtection])
+        try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        // Device-local only (SPEC §8): keep tab data out of iCloud backups. Set
+        // after the write: the attribute needs an existing file, and an atomic
+        // write replaces the file and drops it.
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
         AppGroup.defaults.set(snapshot.fetchedAt.timeIntervalSince1970, forKey: "spacesCacheTime")
     }
 
@@ -1123,7 +1158,10 @@ enum SpacesSyncService {
     /// Loads cached data immediately, then refreshes over the network.
     @discardableResult
     static func refresh() async throws -> ZenSnapshot {
+        let started = AccountStore.currentGeneration
         let fresh = try await loadSnapshot()
+        // A sign-out during the fetch already deleted the cache; don't refill it.
+        guard AccountStore.isCurrent(started) else { throw SyncError.notSignedIn }
         cache(fresh)
         return fresh
     }

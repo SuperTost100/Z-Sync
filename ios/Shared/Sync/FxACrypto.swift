@@ -102,6 +102,17 @@ enum SyncError: LocalizedError {
     /// Conditional write conflict that survived the single retry mandated by
     /// SPEC §7.2, or a partial batch write.
     case conflict
+    /// The space a write targets is absent or deleted on the server (SPEC §7.5).
+    case targetMissing
+    /// The planning read was truncated, malformed or undecryptable, so the
+    /// write was refused before anything changed (SPEC §7.5).
+    case incompleteRead
+    /// `meta/global` reports a Spaces engine or storage version this app
+    /// does not know (SPEC §7.5).
+    case unsupportedSyncVersion
+    /// The storage server rejected the token-server credentials (HTTP 401).
+    /// `AccountStore.withClient` drops them and retries once.
+    case unauthorized
 
     var errorDescription: String? {
         switch self {
@@ -110,6 +121,10 @@ enum SyncError: LocalizedError {
         case .totpRequired: String(localized: "error.totp")
         case .storageUnavailable: String(localized: "error.storage_unavailable")
         case .conflict: String(localized: "error.conflict")
+        case .targetMissing: String(localized: "error.target_missing")
+        case .incompleteRead: String(localized: "error.incomplete_read")
+        case .unsupportedSyncVersion: String(localized: "error.unsupported_sync_version")
+        case .unauthorized: String(localized: "error.auth")
         }
     }
 }

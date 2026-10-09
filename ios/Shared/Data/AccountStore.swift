@@ -40,6 +40,10 @@ enum AccountStore {
     private static let lock = NSLock()
     private static var cachedSnapshot: AccountSnapshot?
     private static var cachedCreds: TokenServerCreds?
+    /// Bumped by `save` and `clear`. Work that started under an older
+    /// generation (a credential fetch, a refresh) must not publish its result,
+    /// so a sign-out can't be undone by a request that was already in flight.
+    private static var generation = 0
 
     private static var sessionBackupURL: URL { AppGroup.container.appendingPathComponent("account-session.json") }
     private static var legacyFileURL: URL { AppGroup.container.appendingPathComponent("account.json") }
@@ -54,6 +58,10 @@ enum AccountStore {
             throw SyncError.storageUnavailable
         }
 
+        lock.lock()
+        generation += 1
+        cachedCreds = nil
+        lock.unlock()
         storeInMemory(snapshot)
     }
 
@@ -107,6 +115,7 @@ enum AccountStore {
 
     static func clear() {
         lock.lock()
+        generation += 1
         cachedSnapshot = nil
         cachedCreds = nil
         lock.unlock()
@@ -120,6 +129,7 @@ enum AccountStore {
     static var isDemo: Bool { load()?.isDemo == true }
 
     static func connect() async throws -> SyncClient {
+        let started = currentGeneration
         guard let account = load(), !account.isDemo else { throw SyncError.notSignedIn }
         let kB = try FxACrypto.unhex(account.kBHex)
 
@@ -129,8 +139,36 @@ enum AccountStore {
 
         let fxa = FxAClient(transport: transport)
         let creds = try await fxa.syncCredentials(sessionToken: account.sessionTokenHex, kB: kB)
-        saveCreds(creds)
+        // Signed out, or into another account, while the fetch ran: drop it.
+        guard saveCreds(creds, ifGeneration: started) else { throw SyncError.notSignedIn }
         return try await SyncClient(creds: creds, kB: kB, transport: transport)
+    }
+
+    /// Runs `operation` with a connected client. When the storage server
+    /// rejects the cached token-server credentials (401), they are dropped and
+    /// the operation runs once more with fresh ones. A 401 rejects the request
+    /// before anything is written, so the retry is safe for writes too.
+    static func withClient<T>(_ operation: (SyncClient) async throws -> T) async throws -> T {
+        do {
+            return try await operation(try await connect())
+        } catch SyncError.unauthorized {
+            invalidateCreds()
+            return try await operation(try await connect())
+        }
+    }
+
+    /// The current sign-in generation; pass it to `isCurrent` after async work.
+    static var currentGeneration: Int {
+        lock.withLock { generation }
+    }
+
+    /// False once the user signed out or switched accounts since `generation`.
+    static func isCurrent(_ generation: Int) -> Bool {
+        currentGeneration == generation
+    }
+
+    static func invalidateCreds() {
+        lock.withLock { cachedCreds = nil }
     }
 
     // MARK: - Token credentials (memory only; short-lived by design)
@@ -142,10 +180,12 @@ enum AccountStore {
         return creds.expiresAt > Date() ? creds : nil
     }
 
-    private static func saveCreds(_ creds: TokenServerCreds) {
-        lock.lock()
-        cachedCreds = creds
-        lock.unlock()
+    private static func saveCreds(_ creds: TokenServerCreds, ifGeneration expected: Int) -> Bool {
+        lock.withLock {
+            guard generation == expected else { return false }
+            cachedCreds = creds
+            return true
+        }
     }
 
     private static func storeInMemory(_ snapshot: AccountSnapshot) {

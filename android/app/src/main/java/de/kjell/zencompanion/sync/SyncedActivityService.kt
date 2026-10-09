@@ -25,8 +25,7 @@ object SyncedActivityService {
 
     suspend fun load(context: Context): Activity = withContext(Dispatchers.IO) {
         if (AccountStore.isDemo(context)) return@withContext DemoCatalog.activity
-        val client = AccountStore.connect(context)
-        load(client)
+        AccountStore.withClient(context) { load(it) }
     }
 
     fun load(client: SyncClient): Activity {

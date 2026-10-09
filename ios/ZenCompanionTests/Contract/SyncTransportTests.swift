@@ -476,7 +476,93 @@ final class SyncTransportTests: XCTestCase {
         )
     }
 
+    // MARK: - Expired credentials and sign-out races
+
+    /// A storage 401 drops the cached token-server credentials and runs the
+    /// operation once more with fresh ones, so an early server-side expiry
+    /// no longer fails every refresh until the cached credentials time out.
+    func testStorage401RefreshesCredentialsAndRetriesOnce() async throws {
+        let server = FxAAndSyncServer(kB: accountKB, storageKeys: defaultKeys)
+        server.storage401Remaining = 1
+        try installAccount(transport: server)
+        defer { restoreAccountStore() }
+
+        _ = try await SpacesSyncService.loadSnapshot()
+
+        XCTAssertEqual(server.tokenServerCalls, 2, "the 401 must force a fresh token-server exchange")
+        XCTAssertEqual(server.storage401Remaining, 0)
+    }
+
+    /// A 401 that persists after the refresh surfaces instead of looping.
+    func testPersistentStorage401SurfacesAfterOneRetry() async throws {
+        let server = FxAAndSyncServer(kB: accountKB, storageKeys: defaultKeys)
+        server.storage401Remaining = 10
+        try installAccount(transport: server)
+        defer { restoreAccountStore() }
+
+        do {
+            _ = try await SpacesSyncService.loadSnapshot()
+            XCTFail("expected SyncError.unauthorized")
+        } catch let error as SyncError {
+            guard case .unauthorized = error else { return XCTFail("expected .unauthorized, got \(error)") }
+        }
+        XCTAssertEqual(server.tokenServerCalls, 2)
+    }
+
+    /// Signing out while credentials are being fetched must not leave them
+    /// cached for the next account, and the fetch reports signed-out.
+    func testSignOutDuringCredentialFetchDropsTheResult() async throws {
+        let server = FxAAndSyncServer(kB: accountKB, storageKeys: defaultKeys)
+        server.onTokenServer = { AccountStore.clear() }
+        try installAccount(transport: server)
+        defer { restoreAccountStore() }
+
+        do {
+            _ = try await AccountStore.connect()
+            XCTFail("expected SyncError.notSignedIn")
+        } catch let error as SyncError {
+            guard case .notSignedIn = error else { return XCTFail("expected .notSignedIn, got \(error)") }
+        }
+
+        server.onTokenServer = nil
+        try AccountStore.save(testAccount)
+        _ = try await AccountStore.connect()
+        XCTAssertEqual(server.tokenServerCalls, 2, "the dropped credentials must not be reused")
+    }
+
     // MARK: - Helpers
+
+    private let accountKB = Data(repeating: 0xAB, count: 32)
+
+    private var testAccount: AccountSnapshot {
+        AccountSnapshot(
+            email: "a@b.c",
+            uid: "u1",
+            sessionTokenHex: String(repeating: "01", count: 32),
+            kBHex: String(repeating: "ab", count: 32)
+        )
+    }
+
+    private var savedStores: (AccountSecureStore, AccountFileStore, SyncHTTPTransport)?
+
+    private func installAccount(transport: SyncHTTPTransport) throws {
+        savedStores = (AccountStore.secureStore, AccountStore.fileStore, AccountStore.transport)
+        AccountStore.secureStore = StubSecureStore()
+        AccountStore.fileStore = StubFileStore()
+        AccountStore.transport = transport
+        SpacesSyncService.deleteCachedSnapshot()
+        try AccountStore.save(testAccount)
+    }
+
+    private func restoreAccountStore() {
+        AccountStore.clear()
+        SpacesSyncService.deleteCachedSnapshot()
+        if let saved = savedStores {
+            AccountStore.secureStore = saved.0
+            AccountStore.fileStore = saved.1
+            AccountStore.transport = saved.2
+        }
+    }
 
     private func requestPath(_ fixture: String) -> String {
         let input = HTTPFixtures.json(fixture)["input"] as! [String: Any]
@@ -567,4 +653,82 @@ private struct StubFileStore: AccountFileStore {
     func write(_ data: Data, to url: URL) throws {}
     func remove(_ url: URL) {}
     func exists(_ url: URL) -> Bool { false }
+}
+
+/// Answers the FxA OAuth, scoped-key and token-server calls plus the Sync
+/// storage reads one `AccountStore.connect()` + snapshot load makes. Routed by
+/// URL and locked, because the snapshot load reads two collections at once.
+final class FxAAndSyncServer: SyncHTTPTransport {
+    private let lock = NSLock()
+    private let kB: Data
+    private let storageKeys: SyncCrypto.KeyBundle
+    private var _tokenServerCalls = 0
+    private var _storage401Remaining = 0
+    var onTokenServer: (() -> Void)?
+
+    init(kB: Data, storageKeys: SyncCrypto.KeyBundle) {
+        self.kB = kB
+        self.storageKeys = storageKeys
+    }
+
+    var tokenServerCalls: Int { lock.withLock { _tokenServerCalls } }
+    var storage401Remaining: Int {
+        get { lock.withLock { _storage401Remaining } }
+        set { lock.withLock { _storage401Remaining = newValue } }
+    }
+
+    func send(_ request: SyncHTTPRequest) async throws -> SyncHTTPResponse {
+        let host = request.url.host ?? ""
+        let path = request.url.path
+        func json(_ object: Any, status: Int = 200) -> SyncHTTPResponse {
+            SyncHTTPResponse(
+                statusCode: status,
+                headers: ["x-last-modified": "1.00"],
+                body: (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+            )
+        }
+        if host == "oauth.accounts.firefox.com" || path.hasSuffix("/oauth/token") {
+            return json(["access_token": "access"])
+        }
+        if path.hasSuffix("/account/scoped-key-data") {
+            return json(["https://identity.mozilla.com/apps/oldsync": ["keyRotationTimestamp": 0]])
+        }
+        if host == "token.services.mozilla.com" {
+            let call = lock.withLock { () -> Int in
+                _tokenServerCalls += 1
+                return _tokenServerCalls
+            }
+            onTokenServer?()
+            return json([
+                "uid": "1",
+                "api_endpoint": "https://sync.example.com/1.0/sync/1.5",
+                "id": "hawk-\(call)",
+                "key": "key-\(call)",
+                "duration": 3600,
+            ])
+        }
+        guard host == "sync.example.com" else {
+            return SyncHTTPResponse(statusCode: 500, headers: [:], body: Data())
+        }
+        if path.hasSuffix("/storage/crypto/keys") {
+            let keys: [String: Any] = [
+                "default": [storageKeys.encryptionKey.base64EncodedString(), storageKeys.hmacKey.base64EncodedString()],
+                "collections": [:] as [String: Any],
+            ]
+            let payload = try SyncCrypto.encryptBSO(
+                plaintext: try JSONSerialization.data(withJSONObject: keys),
+                keys: SyncCrypto.syncKeyBundle(fromKB: kB)
+            )
+            return json(["id": "keys", "payload": payload])
+        }
+        if path.hasSuffix("/storage/spaces") {
+            let reject = lock.withLock { () -> Bool in
+                guard _storage401Remaining > 0 else { return false }
+                _storage401Remaining -= 1
+                return true
+            }
+            if reject { return SyncHTTPResponse(statusCode: 401, headers: [:], body: Data()) }
+        }
+        return json([] as [Any])
+    }
 }

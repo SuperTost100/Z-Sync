@@ -212,7 +212,14 @@ struct LiveSessionSigningOut: SessionSigningOut {
             ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
             modifiedSince: Date.distantPast
         ) {}
+        if let account = AccountStore.load(), !account.isDemo {
+            let transport = AccountStore.transport
+            Task.detached(priority: .utility) {
+                try? await FxAClient(transport: transport).destroySession(sessionToken: account.sessionTokenHex)
+            }
+        }
         AccountStore.clear()
+        FaviconLoader.shared.removeAll()
         SpacesSyncService.deleteCachedSnapshot()
         NotificationCenter.default.post(name: .zenCompanionSignedOut, object: nil)
     }
