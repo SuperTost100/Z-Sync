@@ -9,6 +9,10 @@ on:
       ref:
         description: Branch or commit to test
         required: true
+      regenerate:
+        description: Regenerate the Xcode project with XcodeGen before testing
+        type: boolean
+        default: true
 
 jobs:
   android:
@@ -54,6 +58,7 @@ jobs:
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
       - name: Regenerate project with XcodeGen
+        if: ${{ inputs.regenerate }}
         run: |
           brew install xcodegen
           xcodegen
