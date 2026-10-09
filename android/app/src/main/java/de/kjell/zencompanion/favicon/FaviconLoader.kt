@@ -49,6 +49,12 @@ object FaviconLoader {
         }
     }
 
+    /** Drops every cached icon, in memory and on disk (sign-out). */
+    fun clear() {
+        memoryCache.evictAll()
+        diskDir?.listFiles()?.forEach { it.delete() }
+    }
+
     /** Count-bounded like the Swift NSCache (countLimit 400); ~20MB cost guard via byteCount. */
     private val memoryCache = object : LruCache<String, Bitmap>(400) {
         override fun sizeOf(key: String, value: Bitmap): Int = 1

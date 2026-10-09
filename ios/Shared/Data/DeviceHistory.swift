@@ -26,8 +26,7 @@ enum SyncedActivityService {
         if AccountStore.isDemo {
             return DemoCatalog.activity
         }
-        let client = try await AccountStore.connect()
-        return try await load(client: client)
+        return try await AccountStore.withClient { try await load(client: $0) }
     }
 
     static func load(client: SyncClient) async throws -> Activity {

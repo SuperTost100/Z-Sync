@@ -110,6 +110,9 @@ enum SyncError: LocalizedError {
     /// `meta/global` reports a Spaces engine or storage version this app
     /// does not know (SPEC §7.5).
     case unsupportedSyncVersion
+    /// The storage server rejected the token-server credentials (HTTP 401).
+    /// `AccountStore.withClient` drops them and retries once.
+    case unauthorized
 
     var errorDescription: String? {
         switch self {
@@ -121,6 +124,7 @@ enum SyncError: LocalizedError {
         case .targetMissing: String(localized: "error.target_missing")
         case .incompleteRead: String(localized: "error.incomplete_read")
         case .unsupportedSyncVersion: String(localized: "error.unsupported_sync_version")
+        case .unauthorized: String(localized: "error.auth")
         }
     }
 }

@@ -458,6 +458,7 @@ class SyncClient internal constructor(
         )
         if (response.statusCode == 412 && allowPreconditionFailed) return response
         if (response.statusCode == 404 && allowMissing) return response
+        if (response.statusCode == 401) throw SyncError.Unauthorized("HTTP 401 $method $path")
         if (response.statusCode !in 200..299) {
             // Hawk auth failures carry the server's verdict here.
             val detailText = String(response.body, Charsets.UTF_8).take(400)

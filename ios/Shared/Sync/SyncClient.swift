@@ -493,6 +493,10 @@ actor SyncClient {
             return (http.body, http)
         }
         if http.statusCode == 404, allowMissing { return (Data(), http) }
+        if http.statusCode == 401 {
+            log.error("storage 401 \(method, privacy: .public) \(path, privacy: .public)")
+            throw SyncError.unauthorized
+        }
         guard (200..<300).contains(http.statusCode) else {
             let text = String(data: http.body, encoding: .utf8) ?? ""
             var detail = "HTTP \(http.statusCode) \(method) \(path): \(text)"

@@ -21,6 +21,12 @@ sealed class SyncError(message: String?) : Exception(message) {
 
     /** `meta/global` reports an unknown Spaces engine or storage version (SPEC §7.5). */
     object UnsupportedSyncVersion : SyncError(null)
+
+    /**
+     * The storage server rejected the token-server credentials (HTTP 401).
+     * [de.kjell.zencompanion.data.AccountStore.withClient] drops them and retries once.
+     */
+    class Unauthorized(detail: String? = null) : SyncError(detail)
     object NotSignedIn : SyncError(null)
     object TotpRequired : SyncError(null)
     object StorageUnavailable : SyncError(null)

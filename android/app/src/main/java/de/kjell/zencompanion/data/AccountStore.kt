@@ -87,6 +87,13 @@ object AccountStore {
     @Volatile
     private var cachedCreds: TokenServerCreds? = null
 
+    /**
+     * Bumped by [save] and [clear]. Work that started under an older
+     * generation (a credential fetch, a refresh) must not publish its result,
+     * so a sign-out can't be undone by a request that was already in flight.
+     */
+    private var generation = 0
+
     @Volatile
     private var secureStore: AccountPrefsStore? = null
 
@@ -224,7 +231,11 @@ object AccountStore {
             android.util.Log.e("AccountStore", "Failed to persist account snapshot")
             throw SyncError.StorageUnavailable
         }
-        synchronized(this) { cachedSnapshot = snapshot }
+        synchronized(this) {
+            generation++
+            cachedCreds = null
+            cachedSnapshot = snapshot
+        }
     }
 
     fun load(context: Context): AccountSnapshot? {
@@ -277,6 +288,7 @@ object AccountStore {
 
     fun clear(context: Context) {
         synchronized(this) {
+            generation++
             cachedSnapshot = null
             cachedCreds = null
         }
@@ -295,6 +307,7 @@ object AccountStore {
     suspend fun connect(context: Context): SyncClient = withContext(Dispatchers.IO) {
         // Blocking HttpURLConnection work (FxA credential refresh, crypto/keys
         // fetch) must never run on the caller's Main dispatcher.
+        val started = currentGeneration
         val account = load(context)?.takeUnless { it.isDemo } ?: throw SyncError.NotSignedIn
         val kB = FxACrypto.unhex(account.kBHex)
 
@@ -305,7 +318,38 @@ object AccountStore {
 
         val fxa = FxAClient(transport = authTransport)
         val creds = fxa.syncCredentials(sessionToken = account.sessionTokenHex, kB = kB)
-        credsMutex.withLock { cachedCreds = creds }
+        // Signed out, or into another account, while the fetch ran: drop it.
+        val published = credsMutex.withLock {
+            synchronized(this@AccountStore) {
+                (generation == started).also { if (it) cachedCreds = creds }
+            }
+        }
+        if (!published) throw SyncError.NotSignedIn
         SyncClient(creds = creds, kB = kB, transport = syncTransport)
+    }
+
+    /**
+     * Runs [operation] with a connected client. When the storage server rejects
+     * the cached token-server credentials (401), they are dropped and the
+     * operation runs once more with fresh ones. A 401 rejects the request
+     * before anything is written, so the retry is safe for writes too.
+     */
+    suspend fun <T> withClient(context: Context, operation: suspend (SyncClient) -> T): T =
+        try {
+            operation(connect(context))
+        } catch (_: SyncError.Unauthorized) {
+            invalidateCreds()
+            operation(connect(context))
+        }
+
+    /** The current sign-in generation; pass it to [isCurrent] after async work. */
+    val currentGeneration: Int
+        get() = synchronized(this) { generation }
+
+    /** False once the user signed out or switched accounts since [generation]. */
+    fun isCurrent(generation: Int): Boolean = currentGeneration == generation
+
+    fun invalidateCreds() {
+        synchronized(this) { cachedCreds = null }
     }
 }

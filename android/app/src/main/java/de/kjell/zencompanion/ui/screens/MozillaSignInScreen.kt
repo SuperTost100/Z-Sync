@@ -348,6 +348,11 @@ fun MozillaSignInScreen(
         error = null
         unverifiedHint = false
         runCatching { onFinishLogin(login) }
+            .onSuccess {
+                // The app now holds its own copy of the session; don't leave
+                // the page's copy in this WebView's on-disk storage.
+                WebStorage.getInstance().deleteOrigin("https://accounts.firefox.com")
+            }
             .onFailure { e ->
                 finishing = false
                 error = e.message ?: e.toString()

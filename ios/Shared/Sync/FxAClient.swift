@@ -78,7 +78,8 @@ actor FxAClient {
             "client_id": "5882386c6d801776",
             "grant_type": "fxa-credentials",
             "scope": "https://identity.mozilla.com/apps/oldsync",
-            "access_type": "offline"
+            // No refresh token: the app re-runs this grant when it needs one.
+            "access_type": "online"
         ]
         let urls = [
             URL(string: "https://oauth.accounts.firefox.com/v1/token")!,
@@ -95,6 +96,19 @@ actor FxAClient {
             }
         }
         throw SyncError.auth(last)
+    }
+
+    /// Ends this app's own FxA session on the server, so a signed-out device
+    /// no longer holds a valid token. Best effort at sign-out.
+    func destroySession(sessionToken: String) async throws {
+        let token = try FxACrypto.unhex(sessionToken)
+        _ = try await hawkJSON(
+            url: Self.authBase.appendingPathComponent("session/destroy"),
+            method: "POST",
+            token: token,
+            tokenType: "sessionToken",
+            json: [:]
+        )
     }
 
     private func hawkJSON(

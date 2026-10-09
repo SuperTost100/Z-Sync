@@ -19,7 +19,7 @@ extension Error {
                 return String(localized: "error.storage_unavailable")
             case .conflict:
                 return String(localized: "error.conflict")
-            case .auth:
+            case .auth, .unauthorized:
                 return String(localized: "error.auth")
             case .crypto:
                 return String(localized: "error.crypto")

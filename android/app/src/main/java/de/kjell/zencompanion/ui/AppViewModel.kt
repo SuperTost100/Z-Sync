@@ -27,6 +27,7 @@ import de.kjell.zencompanion.ui.screens.FxAWebLogin
 import de.kjell.zencompanion.util.FriendlyError
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -261,6 +262,10 @@ class AppViewModel(
     internal val browserRepository: BrowserRepository = AndroidBrowserRepository(appContext),
     private val preferencesRepository: PreferencesRepository = AndroidPreferencesRepository(appContext),
     private val activityRepository: ActivityRepository = AndroidActivityRepository(appContext),
+    /** Ends the FxA session on the server at sign-out; replaceable in tests. */
+    private val revokeSession: suspend (String) -> Unit = { token ->
+        FxAClient(transport = AccountStore.authTransport).destroySession(token)
+    },
 ) : ViewModel() {
     // Loaded synchronously at creation so the first composed frame already
     // shows the right screen — no sign-in flash on cold start.
@@ -282,6 +287,7 @@ class AppViewModel(
     val reviewRequests: SharedFlow<Unit> = _reviewRequests
 
     private var reloadJob: Job? = null
+    private var activityJob: Job? = null
     private var reviewJob: Job? = null
     private var reloading = false
     private var bootstrapped = false
@@ -372,11 +378,24 @@ class AppViewModel(
     }
 
     fun signOut() {
+        // A refresh or history load still in flight must not repopulate the
+        // signed-out app (AccountStore's generation check backs this up).
+        reloadJob?.cancel()
+        activityJob?.cancel()
+        val account = AccountStore.load(appContext)?.takeUnless { it.isDemo }
         AccountStore.clear(appContext)
         SnapshotCache.deleteCachedSnapshot(appContext)
         SnapshotCache.invalidateMemory()
+        FaviconLoader.clear()
         preferencesRepository.setSyncSetupHintDismissed(false)
         _browser.value = BrowserState()
+        _activity.value = ActivityState()
+        if (account != null) {
+            // Best effort, and not tied to this screen's lifetime.
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { revokeSession(account.sessionTokenHex) }
+            }
+        }
         AppEvents.emitSignedOut()
     }
 
@@ -615,7 +634,8 @@ class AppViewModel(
 
     /** Loads (or retries) the synced browsing history into [activity]. */
     fun loadActivity() {
-        viewModelScope.launch {
+        activityJob?.cancel()
+        activityJob = viewModelScope.launch {
             val current = _activity.value
             _activity.value = current.copy(loading = current.activity == null, errorRes = null)
             try {
