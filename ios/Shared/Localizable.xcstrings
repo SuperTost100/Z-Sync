@@ -432,6 +432,17 @@
     "FEEDBACK" : {
 
     },
+    "home.delete_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't delete this tab."
+          }
+        }
+      }
+    },
     "home.disclaimer" : {
       "localizations" : {
         "en" : {
@@ -448,6 +459,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Icons from Zen Browser under MPL 2.0."
+          }
+        }
+      }
+    },
+    "home.refresh_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't refresh. Tap to try again."
           }
         }
       }

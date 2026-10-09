@@ -174,6 +174,52 @@ class AppViewModelTests {
     }
 
     @Test
+    fun reloadDuringReloadRunsAgainAfterward() = runTest(mainDispatcherRule.testDispatcher) {
+        val browser = FakeBrowserRepository()
+        browser.refreshGate = CompletableDeferred()
+        val vm = newViewModel(browser = browser)
+
+        vm.reload()
+        runCurrent()
+        // A write's stale signal lands mid-fetch: it must not be dropped.
+        vm.reload()
+        runCurrent()
+        assertEquals(1, browser.refreshCalls)
+
+        browser.refreshGate?.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(2, browser.refreshCalls)
+    }
+
+    @Test
+    fun interruptedRefreshIsRetriedOnce() = runTest(mainDispatcherRule.testDispatcher) {
+        val browser = FakeBrowserRepository()
+        browser.refreshFailures += java.util.concurrent.CancellationException("request interrupted")
+        val vm = newViewModel(browser = browser)
+
+        vm.reload()
+        advanceUntilIdle()
+
+        assertEquals(2, browser.refreshCalls)
+        assertNull(vm.browser.value.loadErrorRes)
+    }
+
+    @Test
+    fun failedDeleteShowsMessageBriefly() = runTest(mainDispatcherRule.testDispatcher) {
+        val browser = FakeBrowserRepository()
+        browser.deleteFailure = SyncError.Conflict()
+        val vm = newViewModel(browser = browser)
+
+        vm.deleteTab("t1")
+        runCurrent()
+        assertEquals(R.string.error_conflict, vm.browser.value.deleteErrorRes)
+
+        advanceTimeBy(5_001)
+        runCurrent()
+        assertNull(vm.browser.value.deleteErrorRes)
+    }
+
+    @Test
     fun saveKindPersistsThroughPreferencesRepository() {
         val repository = AndroidPreferencesRepository(context)
 
@@ -406,6 +452,9 @@ private class FakeBrowserRepository(
     var lastSpace: String? = null
     var refreshGate: CompletableDeferred<Unit>? = null
     var refreshCalls = 0
+    /** Thrown by the next refresh calls, in order, before succeeding. */
+    val refreshFailures = mutableListOf<Exception>()
+    var deleteFailure: Exception? = null
     var demo = false
 
     override val cachedSnapshot: ZenSpaces.ZenSnapshot?
@@ -420,6 +469,7 @@ private class FakeBrowserRepository(
     override suspend fun refresh(): ZenSpaces.ZenSnapshot {
         refreshCalls++
         refreshGate?.await()
+        if (refreshFailures.isNotEmpty()) throw refreshFailures.removeAt(0)
         return snapshot ?: ZenSpaces.ZenSnapshot(emptyList())
     }
 
@@ -436,6 +486,7 @@ private class FakeBrowserRepository(
 
     override suspend fun deleteTab(id: String) {
         deleted += id
+        deleteFailure?.let { throw it }
     }
 
     override fun isDemo(): Boolean = demo

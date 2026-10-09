@@ -74,6 +74,8 @@
     <string name="error_auth">Couldn\'t sign in to your Mozilla account. Try signing out and back in.</string>
     <string name="error_crypto">Your sync data couldn\'t be decrypted. Sign out and back in to refresh your keys.</string>
     <string name="error_network">Network problem while contacting Mozilla sync.</string>
+    <string name="home_refresh_failed">Couldn\'t refresh. Tap to try again.</string>
+    <string name="home_delete_failed">Couldn\'t delete this tab.</string>
     <string name="error_conflict">Another device changed this data at the same time. Please try again.</string>
     <string name="error_target_missing">This space isn\'t in Zen anymore. Pull to refresh and pick another one.</string>
     <string name="error_incomplete_read">Z-Sync couldn\'t read all of your Zen data, so it didn\'t change anything. Pull to refresh and try again.</string>

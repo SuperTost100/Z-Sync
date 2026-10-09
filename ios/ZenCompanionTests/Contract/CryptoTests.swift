@@ -631,6 +631,38 @@ final class ZenSpacesDecoderTests: XCTestCase {
         XCTAssertEqual(built.tabs.map(\.id), ["n1", "n2"])
     }
 
+    /// A tab whose folder record is missing renders at the space root
+    /// instead of disappearing.
+    func testMakeSpaceShowsTabWhoseFolderIsMissing() {
+        let space = ZenSpaceRecord(uuid: "space-1", name: "Work", children: ["t1"])
+        let t1 = ZenTabRecord(tabId: "t1", url: "https://t1.de", title: "T1", workspaceUuid: "space-1", folderId: "gone")
+        let t2 = ZenTabRecord(tabId: "t2", url: "https://t2.de", title: "T2", workspaceUuid: "space-1", folderId: "gone")
+
+        let built = SpacesSyncService.makeSpace(from: space, allTabs: ["t1": t1, "t2": t2], folders: [:])
+
+        XCTAssertEqual(built.pinned.map(\.id), ["t1", "t2"])
+    }
+
+    /// A split listed in a folder keeps its members at the split's position.
+    func testMakeSpaceKeepsSplitMembersInFolderOrder() {
+        let space = ZenSpaceRecord(uuid: "space-1", name: "Work", children: ["f1"])
+        let folder = ZenFolderRecord(folderId: "f1", name: "F", workspaceUuid: "space-1", children: ["a", "split-1", "z"])
+        func tab(_ id: String) -> ZenTabRecord {
+            ZenTabRecord(tabId: id, url: "https://\(id).de", title: id.uppercased(), workspaceUuid: "space-1", folderId: "f1")
+        }
+        let split = ZenSplitRecord(splitId: "split-1", tabs: ["m1", "m2"], workspaceUuid: "space-1", folderId: "f1")
+
+        let built = SpacesSyncService.makeSpace(
+            from: space,
+            allTabs: ["a": tab("a"), "m1": tab("m1"), "m2": tab("m2"), "z": tab("z")],
+            folders: ["f1": folder],
+            splits: ["split-1": split]
+        )
+
+        guard case .folder(let f) = built.pinned.first else { return XCTFail("expected folder") }
+        XCTAssertEqual(f.tabs.map(\.id), ["a", "m1", "m2", "z"])
+    }
+
     func testMakeSpaceWithoutNormalTabsKeepsOldBehaviour() {
         let space = ZenSpaceRecord(uuid: "space-1", name: "Work", children: ["p1", "p2"])
         let p1 = ZenTabRecord(tabId: "p1", url: "https://p1.de", title: "P1", workspaceUuid: "space-1")
