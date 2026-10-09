@@ -191,6 +191,10 @@ class MiniBrowserViewModelTests {
             currentSpaceId = "s2",
         )
         assertEquals("https://three.example/", vm.state.value.currentUrl)
+        // Recreating the screen for the same launch reopens the current page;
+        // a new launch never sees it.
+        assertEquals("https://three.example/", vm.restoredUrl(2))
+        assertNull(vm.restoredUrl(3))
 
         advanceTimeBy(5_000)
         runCurrent()

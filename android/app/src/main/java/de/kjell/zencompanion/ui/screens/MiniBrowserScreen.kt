@@ -114,7 +114,9 @@ fun MiniBrowserScreen(
 
     // Auto-focus URL bar if opened without initial URL
     LaunchedEffect(initialUrl) {
-        if (initialUrl.isNullOrEmpty()) {
+        // After a configuration change the page is already open: don't
+        // jump into the address bar again.
+        if (initialUrl.isNullOrEmpty() && viewModel.restoredUrl(launchKey) == null) {
             delay(200)
             focusRequester.requestFocus()
         }
@@ -189,7 +191,9 @@ fun MiniBrowserScreen(
                     .fillMaxWidth(),
             ) {
                 MiniBrowserWebView(
-                    initialUrl = initialUrl,
+                    // A recreated WebView (theme or font change) reopens the
+                    // page the user was on, not the one the browser opened with.
+                    initialUrl = viewModel.restoredUrl(launchKey) ?: initialUrl,
                     isAddressFocused = state.isAddressFocused,
                     onWebViewCreated = { webView = it },
                     onLoadingChange = viewModel::onLoadingChange,
