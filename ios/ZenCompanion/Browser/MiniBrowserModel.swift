@@ -110,6 +110,12 @@ final class MiniBrowserModel {
     }
 
     func load(url: URL) {
+        // A typed or synced mailto:/tel: is an explicit request to leave the
+        // browser; the page navigation policy only lets taps through.
+        guard BrowserNavigationPolicy.loadsInWebView(url) else {
+            urlOpener.open(url)
+            return
+        }
         webView?.load(URLRequest(url: url))
     }
 

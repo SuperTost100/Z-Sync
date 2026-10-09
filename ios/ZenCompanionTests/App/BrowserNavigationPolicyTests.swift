@@ -45,4 +45,13 @@ final class BrowserNavigationPolicyTests: XCTestCase {
     func testUrlWithoutSchemeStaysInWebView() {
         XCTAssertTrue(BrowserNavigationPolicy.loadsInWebView(URL(string: "example.com")!))
     }
+
+    /// Another app opens only from a tap in the main page; script, redirect
+    /// and iframe navigations are dropped (matches Android `BLOCK`).
+    func testOtherAppsOpenOnlyFromATapInTheMainPage() {
+        XCTAssertTrue(BrowserNavigationPolicy.opensExternally(userTapped: true, isMainFrame: true))
+        XCTAssertFalse(BrowserNavigationPolicy.opensExternally(userTapped: false, isMainFrame: true))
+        XCTAssertFalse(BrowserNavigationPolicy.opensExternally(userTapped: true, isMainFrame: false))
+        XCTAssertFalse(BrowserNavigationPolicy.opensExternally(userTapped: false, isMainFrame: false))
+    }
 }

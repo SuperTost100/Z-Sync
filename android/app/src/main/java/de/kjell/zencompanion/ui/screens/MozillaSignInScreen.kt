@@ -70,6 +70,16 @@ class FxAWebLogin(
  * blocked by Mozilla's CDN (HTTP 406), so the bridge replies like Firefox.
  */
 object FxAWeb {
+    /** True only for the real FxA auth origin: https, exact host, default port. */
+    fun isAuthOrigin(uri: Uri?): Boolean =
+        uri != null &&
+            uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host.equals("accounts.firefox.com", ignoreCase = true) &&
+            (uri.port == -1 || uri.port == 443)
+
+    fun isAuthOrigin(url: String?): Boolean =
+        url != null && isAuthOrigin(runCatching { Uri.parse(url) }.getOrNull())
+
     const val loginURL =
         "https://accounts.firefox.com/?service=sync&context=fx_desktop_v3&entrypoint=zencompanion&action=email"
 
@@ -447,7 +457,7 @@ fun MozillaSignInScreen(
                                 request: WebResourceRequest,
                             ): Boolean {
                                 if (!request.isForMainFrame) return false
-                                if (request.url.host == "accounts.firefox.com") return false
+                                if (FxAWeb.isAuthOrigin(request.url)) return false
                                 // Off-host navigations must never load inside the
                                 // auth WebView; user-initiated ones go external.
                                 if (request.hasGesture()) openURLExternally(view.context, request.url)
@@ -464,7 +474,7 @@ fun MozillaSignInScreen(
                                 // `fxaccounts:fxa_status` WebChannel request. The
                                 // `__zencompanionBridge` guard makes re-injection a
                                 // no-op, so this is safe on every navigation.
-                                if (url != null && runCatching { Uri.parse(url).host }.getOrNull() == "accounts.firefox.com") {
+                                if (FxAWeb.isAuthOrigin(url)) {
                                     view.evaluateJavascript(
                                         FxAWeb.bridgeJS(FxAWeb.firefoxDesktopUA, bridgeNonce),
                                         null,
@@ -475,7 +485,7 @@ fun MozillaSignInScreen(
                             override fun onPageFinished(view: WebView, url: String?) {
                                 // Replay and page-constant hiding only run on the
                                 // auth host; other pages get no bridge interaction.
-                                if (url != null && runCatching { Uri.parse(url).host }.getOrNull() == "accounts.firefox.com") {
+                                if (FxAWeb.isAuthOrigin(url)) {
                                     view.evaluateJavascript(FxAWeb.replayJS(), null)
                                 }
                             }

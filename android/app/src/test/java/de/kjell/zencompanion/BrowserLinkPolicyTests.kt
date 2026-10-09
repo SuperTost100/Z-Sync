@@ -1,5 +1,8 @@
 package de.kjell.zencompanion
 
+import de.kjell.zencompanion.ui.screens.isWebScheme
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import de.kjell.zencompanion.ui.screens.BrowserLinkAction
 import de.kjell.zencompanion.ui.screens.browserLinkAction
 import org.junit.Assert.assertEquals
@@ -72,23 +75,27 @@ class BrowserLinkPolicyTests {
     }
 
     @Test
-    fun nonWebSchemesAlwaysOpenExternally() {
-        assertEquals(
-            BrowserLinkAction.OPEN_EXTERNALLY,
-            action("mailto", hasGesture = false, resolvedPackage = null),
-        )
-        assertEquals(
-            BrowserLinkAction.OPEN_EXTERNALLY,
-            action("tel", hasGesture = false, resolvedPackage = null),
-        )
-        assertEquals(
-            BrowserLinkAction.OPEN_EXTERNALLY,
-            action("intent", hasGesture = false, resolvedPackage = null),
-        )
-        assertEquals(
-            BrowserLinkAction.OPEN_EXTERNALLY,
-            action("youtube", hasGesture = false, resolvedPackage = null),
-        )
+    fun nonWebSchemesOpenExternallyOnlyAfterATap() {
+        for (scheme in listOf("mailto", "tel", "intent", "youtube")) {
+            assertEquals(
+                scheme,
+                BrowserLinkAction.OPEN_EXTERNALLY,
+                action(scheme, hasGesture = true, resolvedPackage = null),
+            )
+            assertEquals(
+                scheme,
+                BrowserLinkAction.BLOCK,
+                action(scheme, hasGesture = false, resolvedPackage = null),
+            )
+        }
+    }
+
+    @Test
+    fun webSchemeCheckMatchesThePolicy() {
+        assertTrue(isWebScheme("HTTPS"))
+        assertTrue(isWebScheme(null))
+        assertFalse(isWebScheme("mailto"))
+        assertFalse(isWebScheme("intent"))
     }
 
     @Test
