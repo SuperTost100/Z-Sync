@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +53,7 @@ import de.kjell.zencompanion.R
 import de.kjell.zencompanion.ui.components.openURLExternally
 import de.kjell.zencompanion.ui.theme.LocalZenColors
 import de.kjell.zencompanion.ui.theme.ZenType
+import de.kjell.zencompanion.util.FriendlyError
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
@@ -338,6 +340,7 @@ fun MozillaSignInScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var unverifiedHint by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val cancelText = stringResource(R.string.common_cancel)
     val confirmText = stringResource(R.string.signin_confirm)
     val unverifiedText = stringResource(R.string.signin_unverified_hint)
@@ -350,7 +353,8 @@ fun MozillaSignInScreen(
         runCatching { onFinishLogin(login) }
             .onFailure { e ->
                 finishing = false
-                error = e.message ?: e.toString()
+                // One friendly line; HTTP bodies and server detail stay in the log.
+                error = context.getString(FriendlyError.messageRes(e))
             }
     }
 

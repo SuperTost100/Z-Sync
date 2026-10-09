@@ -14,6 +14,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.TextFieldValue
@@ -35,6 +37,11 @@ internal fun MiniBrowserWebView(
     onTitleChange: (String) -> Unit,
     onProgressChange: (Float) -> Unit,
 ) {
+    // The factory runs once; read the focus through state so later page
+    // loads see the current value instead of the one from creation time.
+    val addressFocused by rememberUpdatedState(isAddressFocused)
+    val textInputChange by rememberUpdatedState(onTextInputChange)
+
     // Native Android WebView
     AndroidView(
         factory = { ctx ->
@@ -70,11 +77,7 @@ internal fun MiniBrowserWebView(
                         onLoadingChange(false)
                         url?.let {
                             onCurrentUrlChange(it)
-                            if (!isAddressFocused) {
-                                val host = runCatching { Uri.parse(it).host?.removePrefix("www.") }.getOrNull()
-                                val display = if (!host.isNullOrEmpty()) host else it
-                                onTextInputChange(TextFieldValue(text = display))
-                            }
+                            if (!addressFocused) textInputChange(TextFieldValue(text = addressDisplay(it)))
                         }
                         view?.title?.let { onTitleChange(it) }
                         onCanGoBackChange(view?.canGoBack() == true)
@@ -100,6 +103,16 @@ internal fun MiniBrowserWebView(
                         }
                     }
 
+                    // Single-page apps change the URL without a page load.
+                    override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                        super.doUpdateVisitedHistory(view, url, isReload)
+                        if (url == null) return
+                        onCurrentUrlChange(url)
+                        if (!addressFocused) textInputChange(TextFieldValue(text = addressDisplay(url)))
+                        onCanGoBackChange(view?.canGoBack() == true)
+                        onCanGoForwardChange(view?.canGoForward() == true)
+                    }
+
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         if (view == null || request == null) return false
                         val context = view.context
@@ -116,6 +129,11 @@ internal fun MiniBrowserWebView(
                         }
                         return false
                     }
+                }
+                // The WebView has no download UI; hand files to the system,
+                // which opens them in the default browser's downloader.
+                setDownloadListener { url, _, _, _, _ ->
+                    if (!url.isNullOrEmpty()) openURLExternally(ctx, url)
                 }
                 webChromeClient = object : WebChromeClient() {
                     override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -135,7 +153,17 @@ internal fun MiniBrowserWebView(
             }
         },
         modifier = Modifier.fillMaxSize(),
+        // Stop audio, video and timers when the browser closes.
+        onRelease = { web ->
+            web.stopLoading()
+            web.destroy()
+        },
     )
+}
+
+private fun addressDisplay(url: String): String {
+    val host = runCatching { Uri.parse(url).host?.removePrefix("www.") }.getOrNull()
+    return if (!host.isNullOrEmpty()) host else url
 }
 
 @Suppress("DEPRECATION")

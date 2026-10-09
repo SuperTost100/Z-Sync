@@ -55,6 +55,38 @@ final class ShareModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .pick)
     }
 
+    /// No cache and no synced spaces: the sheet explains instead of spinning.
+    func testNoCacheAndNoSpacesFailsInsteadOfSpinning() async {
+        let session = FakeShareSession(signedIn: true, cached: nil, fresh: snapshot([]))
+        let model = makeModel(session: session)
+
+        await model.bootstrap()
+
+        XCTAssertEqual(model.phase, .failed)
+        XCTAssertEqual(model.error, "no spaces")
+    }
+
+    /// A refresh landing mid-save keeps the sheet in `.saving`, and a second
+    /// tap while saving writes nothing.
+    func testRefreshAndSecondTapDuringSaveDoNotSaveTwice() async {
+        let space = space("s1")
+        let session = FakeShareSession(signedIn: true, cached: snapshot([space]), fresh: snapshot([space]))
+        let model = makeModel(session: session)
+        await model.bootstrap()
+
+        var phaseAfterRefresh: ZenCompanion.ShareModel.Phase?
+        session.duringAddTab = {
+            await model.refreshSpaces()
+            phaseAfterRefresh = model.phase
+            await model.save()
+        }
+        await model.save()
+
+        XCTAssertEqual(phaseAfterRefresh, .saving)
+        XCTAssertEqual(session.added.count, 1)
+        XCTAssertEqual(model.phase, .saved)
+    }
+
     func testVanishedFolderFallsBackToSpaceRoot() async {
         let withFolder = space("s1", folders: [ZenCompanion.ZenFolder(id: "gone", name: "Gone")])
         let session = FakeShareSession(
@@ -207,6 +239,8 @@ private final class FakeShareSession: ZenCompanion.ShareSessioning {
     var lastSpace: String?
     private(set) var added: [Added] = []
     private(set) var refreshCount = 0
+    /// Runs inside `addTab`, before it returns, to simulate work landing mid-save.
+    var duringAddTab: (() async -> Void)?
 
     init(
         signedIn: Bool,
@@ -239,6 +273,10 @@ private final class FakeShareSession: ZenCompanion.ShareSessioning {
         kind: ZenCompanion.SaveKind
     ) async throws -> ZenCompanion.AddTabOutcome {
         added.append(Added(url: url, title: title, spaceId: spaceId, folderId: folderId, kind: kind))
+        if let hook = duringAddTab {
+            duringAddTab = nil
+            await hook()
+        }
         return fallBackToPinned
             ? ZenCompanion.AddTabOutcome.fallback(recordId: "tab-\(added.count)")
             : ZenCompanion.AddTabOutcome(recordId: "tab-\(added.count)", kind: kind, fellBackToPinned: false)

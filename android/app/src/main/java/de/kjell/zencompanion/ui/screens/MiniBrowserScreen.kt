@@ -277,8 +277,11 @@ fun MiniBrowserScreen(
 
                 // Normal-save fallback notice (same banner styling, anchored
                 // to the top so it never collides with the destination banner).
+                // Keep the last notice while it animates out.
+                var shownNotice by remember { mutableStateOf<MiniBrowserViewModel.Notice?>(null) }
+                state.notice?.let { shownNotice = it }
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = state.fallbackNotice,
+                    visible = state.notice != null,
                     enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
                     exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
                     modifier = Modifier
@@ -303,8 +306,12 @@ fun MiniBrowserScreen(
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp),
                             )
+                            val notice = shownNotice
                             Text(
-                                text = stringResource(R.string.save_fallback_normal_off),
+                                text = listOfNotNull(
+                                    notice?.message?.let { stringResource(it) },
+                                    notice?.detail?.let { stringResource(it) },
+                                ).joinToString(" "),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )

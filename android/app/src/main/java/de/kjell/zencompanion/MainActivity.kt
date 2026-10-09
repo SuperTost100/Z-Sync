@@ -14,6 +14,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,6 +37,14 @@ import de.kjell.zencompanion.ui.theme.ZenTheme
 
 /** One mini-browser launch; [id] keys the ViewModel so a new open starts clean. */
 private data class BrowserLaunch(val url: String?, val title: String?, val id: Int)
+
+/** Keeps an open browser across configuration changes (theme, font size, locale). */
+private val BrowserLaunchSaver = listSaver<BrowserLaunch?, Any?>(
+    save = { launch -> if (launch == null) emptyList() else listOf(launch.url, launch.title, launch.id) },
+    restore = { values ->
+        if (values.isEmpty()) null else BrowserLaunch(values[0] as String?, values[1] as String?, values[2] as Int)
+    },
+)
 
 /**
  * Entry point: sign-in landing or the spaces browser (port of `HomeView`).
@@ -115,10 +125,10 @@ private fun SpacesBrowserRoot(viewModel: AppViewModel) {
     val activityState by viewModel.activity.collectAsState()
     val account = session ?: return
 
-    var showSettings by remember { mutableStateOf(false) }
-    var activeBrowserLaunch by remember { mutableStateOf<BrowserLaunch?>(null) }
-    var browserLaunchCounter by remember { mutableIntStateOf(0) }
-    var showActivity by remember { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var activeBrowserLaunch by rememberSaveable(stateSaver = BrowserLaunchSaver) { mutableStateOf<BrowserLaunch?>(null) }
+    var browserLaunchCounter by rememberSaveable { mutableIntStateOf(0) }
+    var showActivity by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {

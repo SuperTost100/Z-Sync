@@ -1,16 +1,20 @@
 package de.kjell.zencompanion.ui.browser
 
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import de.kjell.zencompanion.R
 import de.kjell.zencompanion.data.SaveKind
 import de.kjell.zencompanion.sync.ZenSpaces
 import de.kjell.zencompanion.ui.BrowserRepository
 import de.kjell.zencompanion.ui.components.PinDestination
 import de.kjell.zencompanion.ui.screens.formatBrowserInput
+import de.kjell.zencompanion.util.FriendlyError
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,12 +55,15 @@ class MiniBrowserViewModel(
         val isFolderMenuOpen: Boolean = false,
         /** Pinned (default) or normal tab for this save. */
         val saveKind: SaveKind = SaveKind.PINNED,
-        /** True while a requested normal save fell back to a pinned record. */
-        val fallbackNotice: Boolean = false,
+        /** Brief banner after a save: a pinned fallback or a failed write. */
+        val notice: Notice? = null,
     ) {
         /** Normal saves always target the space root, so folder rows are hidden. */
         val hideFolders: Boolean get() = saveKind == SaveKind.NORMAL
     }
+
+    /** A short message, optionally followed by a detail line (e.g. the error). */
+    data class Notice(@StringRes val message: Int, @StringRes val detail: Int? = null)
 
     /** What the screen should do after the system back gesture/button. */
     enum class BackAction { Handled, ClearAddressFocus, GoBack, Dismiss }
@@ -73,8 +80,14 @@ class MiniBrowserViewModel(
     val state: StateFlow<State> = _state
 
     private var pinBannerJob: Job? = null
-    private var fallbackNoticeJob: Job? = null
+    private var noticeJob: Job? = null
     private var hasPendingPinSave = false
+
+    /**
+     * The page the user pinned (url to title), captured when the banner
+     * opened, so a later navigation can't swap in another page.
+     */
+    private var pendingPin: Pair<String, String>? = null
 
     /**
      * Re-arms the single per-screen instance for a new browser launch. The
@@ -95,8 +108,9 @@ class MiniBrowserViewModel(
         this.spaces = spaces
         this.currentSpaceId = currentSpaceId
         pinBannerJob?.cancel()
-        fallbackNoticeJob?.cancel()
+        noticeJob?.cancel()
         hasPendingPinSave = false
+        pendingPin = null
         _state.value = State(
             currentUrl = initialUrl.orEmpty(),
             currentTitle = initialTitle.orEmpty(),
@@ -142,6 +156,14 @@ class MiniBrowserViewModel(
 
     fun onCurrentUrlChange(url: String) {
         _state.update { it.copy(currentUrl = url) }
+        // Leaving the pinned page saves it now instead of letting the banner
+        // timer save whatever page is showing later.
+        val pinned = pendingPin?.first
+        if (hasPendingPinSave && pinned != null && pinned != url) {
+            pinBannerJob?.cancel()
+            commitPendingPinSave()
+            _state.update { it.copy(showPinBanner = false) }
+        }
     }
 
     fun onCurrentTitleChange(title: String) {
@@ -205,6 +227,7 @@ class MiniBrowserViewModel(
             }
         }
         hasPendingPinSave = true
+        pendingPin = urlToPin to titleFor(urlToPin)
         _state.update { it.copy(showPinBanner = true) }
         startBannerDismissTimer(5000L) // 5.0 seconds initial time so user can interact
     }
@@ -256,14 +279,19 @@ class MiniBrowserViewModel(
         // Read fresh: the setting may have changed while the browser is open.
         val kind = repository.saveKind()
         val target = _state.value.pinnedDestination
-        val urlToPin = effectiveUrl()
+        val (urlToPin, capturedTitle) = pendingPin ?: effectiveUrl().let { it to titleFor(it) }
+        pendingPin = null
         if (urlToPin.isEmpty()) return
-
-        val titleToPin = _state.value.currentTitle.ifEmpty {
-            runCatching { Uri.parse(urlToPin).host }.getOrNull() ?: urlToPin
+        // Still on the pinned page: a title that loaded after the tap wins.
+        val current = _state.value
+        val titleToPin = if (urlToPin == effectiveUrl() && current.currentTitle.isNotEmpty()) {
+            current.currentTitle
+        } else {
+            capturedTitle
         }
+
         viewModelScope.launch {
-            runCatching {
+            try {
                 val outcome = repository.addTab(
                     url = urlToPin,
                     title = titleToPin,
@@ -272,18 +300,26 @@ class MiniBrowserViewModel(
                     folderId = if (kind == SaveKind.NORMAL) null else target.folderId,
                     kind = kind,
                 )
-                if (outcome.fellBackToPinned) showFallbackNotice()
+                if (outcome.fellBackToPinned) showNotice(Notice(R.string.save_fallback_normal_off))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                showNotice(Notice(R.string.browser_pin_failed, FriendlyError.messageRes(e)))
             }
         }
     }
 
-    /** Brief banner telling the user a normal save was pinned instead. */
-    private fun showFallbackNotice() {
-        fallbackNoticeJob?.cancel()
-        _state.update { it.copy(fallbackNotice = true) }
-        fallbackNoticeJob = viewModelScope.launch {
+    private fun titleFor(url: String): String = _state.value.currentTitle.ifEmpty {
+        runCatching { Uri.parse(url).host }.getOrNull() ?: url
+    }
+
+    /** Brief banner after a save: a pinned fallback or a failed write. */
+    private fun showNotice(notice: Notice) {
+        noticeJob?.cancel()
+        _state.update { it.copy(notice = notice) }
+        noticeJob = viewModelScope.launch {
             delay(6_000L)
-            _state.update { it.copy(fallbackNotice = false) }
+            _state.update { it.copy(notice = null) }
         }
     }
 
