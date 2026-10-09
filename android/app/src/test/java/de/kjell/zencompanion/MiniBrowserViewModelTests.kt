@@ -1,10 +1,12 @@
 package de.kjell.zencompanion
 
 import androidx.compose.ui.text.input.TextFieldValue
+import de.kjell.zencompanion.R
 import de.kjell.zencompanion.data.SaveKind
 import de.kjell.zencompanion.data.SearchEngine
 import de.kjell.zencompanion.data.SearchEngines
 import de.kjell.zencompanion.sync.SpacesSyncService
+import de.kjell.zencompanion.sync.SyncError
 import de.kjell.zencompanion.sync.ZenSpaces
 import de.kjell.zencompanion.ui.BrowserRepository
 import de.kjell.zencompanion.ui.browser.MiniBrowserViewModel
@@ -214,14 +216,52 @@ class MiniBrowserViewModelTests {
         assertEquals(SaveKind.NORMAL, repository.added[0].kind)
         assertEquals("s2", repository.added[0].spaceId)
         assertNull(repository.added[0].folderId)
-        assertTrue(vm.state.value.fallbackNotice)
+        assertEquals(MiniBrowserViewModel.Notice(R.string.save_fallback_normal_off), vm.state.value.notice)
 
         advanceTimeBy(6_000)
         runCurrent()
-        assertFalse(vm.state.value.fallbackNotice)
+        assertNull(vm.state.value.notice)
 
         // Drain the banner timer still scheduled from the trigger.
         advanceTimeBy(5_000)
+        runCurrent()
+    }
+
+    @Test
+    fun navigatingAwayCommitsThePinnedPage() = runTest(mainDispatcherRule.testDispatcher) {
+        val repository = FakeMiniBrowserRepository()
+        val vm = newViewModel(repository, initialUrl = "https://pin.example/a")
+        vm.onCurrentTitleChange("Page A")
+
+        vm.triggerPinBanner()
+        vm.onCurrentTitleChange("Page B")
+        vm.onCurrentUrlChange("https://pin.example/b")
+        runCurrent()
+
+        assertEquals(listOf("https://pin.example/a"), repository.added.map { it.url })
+        assertEquals("Page A", repository.added[0].title)
+        assertFalse(vm.state.value.showPinBanner)
+
+        // The banner timer must not save a second time.
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(1, repository.added.size)
+    }
+
+    @Test
+    fun pinFailureShowsNotice() = runTest(mainDispatcherRule.testDispatcher) {
+        val repository = FakeMiniBrowserRepository(failure = SyncError.Conflict())
+        val vm = newViewModel(repository)
+
+        vm.triggerPinBanner()
+        vm.commitPendingPinSave()
+        runCurrent()
+
+        assertEquals(
+            MiniBrowserViewModel.Notice(R.string.browser_pin_failed, R.string.error_conflict),
+            vm.state.value.notice,
+        )
+        advanceTimeBy(6_000)
         runCurrent()
     }
 
@@ -245,6 +285,7 @@ class MiniBrowserViewModelTests {
 private class FakeMiniBrowserRepository(
     var saveKind: SaveKind = SaveKind.PINNED,
     var fallBackToPinned: Boolean = false,
+    var failure: Exception? = null,
 ) : BrowserRepository {
     data class AddedTab(
         val url: String,
@@ -273,6 +314,7 @@ private class FakeMiniBrowserRepository(
         kind: SaveKind,
     ): SpacesSyncService.AddTabOutcome {
         added += AddedTab(url, title, spaceId, folderId, kind)
+        failure?.let { throw it }
         val effective = if (fallBackToPinned) SaveKind.PINNED else kind
         return SpacesSyncService.AddTabOutcome(
             recordId = "tab-${added.size}",

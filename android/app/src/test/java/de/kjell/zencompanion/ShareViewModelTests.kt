@@ -61,6 +61,49 @@ class ShareViewModelTests {
     }
 
     @Test
+    fun noCacheAndNoSpacesFailsInsteadOfSpinning() = runTest(mainDispatcherRule.testDispatcher) {
+        val vm = ShareViewModel(
+            repository = FakeShareRepository(
+                signedIn = true,
+                cached = null,
+                fresh = ZenSpaces.ZenSnapshot(emptyList()),
+            ),
+            initialUrl = "https://example.com",
+            initialPageTitle = "Example",
+        )
+        runCurrent()
+
+        assertEquals(SharePhase.failed, vm.state.value.phase)
+        assertEquals("no spaces", vm.state.value.errorText)
+    }
+
+    @Test
+    fun refreshAndSecondTapDuringSaveDoNotSaveTwice() = runTest(mainDispatcherRule.testDispatcher) {
+        val space = testSpace("s1")
+        val repository = FakeShareRepository(
+            signedIn = true,
+            cached = ZenSpaces.ZenSnapshot(listOf(space)),
+            fresh = ZenSpaces.ZenSnapshot(listOf(space)),
+        )
+        val vm = ShareViewModel(repository = repository, initialUrl = "https://example.com", initialPageTitle = "Example")
+        runCurrent()
+
+        var phaseAfterRefresh: SharePhase? = null
+        repository.duringAddTab = {
+            vm.refreshSpaces()
+            phaseAfterRefresh = vm.state.value.phase
+            vm.save()
+        }
+        vm.save()
+        runCurrent()
+
+        assertEquals(SharePhase.saving, phaseAfterRefresh)
+        assertEquals(1, repository.added.size)
+        assertEquals(SharePhase.saved, vm.state.value.phase)
+        advanceUntilIdle()
+    }
+
+    @Test
     fun vanishedFolderFallsBackToSpaceRoot() = runTest(mainDispatcherRule.testDispatcher) {
         val space = testSpace("s1")
         val vm = ShareViewModel(
@@ -196,6 +239,9 @@ private class FakeShareRepository(
     val added = mutableListOf<AddedTab>()
     var lastSpace: String? = null
 
+    /** Runs inside [addTab], before it returns, to simulate work landing mid-save. */
+    var duringAddTab: (suspend () -> Unit)? = null
+
     override fun isSignedIn(): Boolean = signedIn
 
     override val cachedSnapshot: ZenSpaces.ZenSnapshot?
@@ -217,6 +263,10 @@ private class FakeShareRepository(
         kind: SaveKind,
     ): SpacesSyncService.AddTabOutcome {
         added += AddedTab(url, title, spaceId, folderId, kind)
+        duringAddTab?.let { hook ->
+            duringAddTab = null
+            hook()
+        }
         val effective = if (fallBackToPinned) SaveKind.PINNED else kind
         return SpacesSyncService.AddTabOutcome(
             recordId = "tab-${added.size}",

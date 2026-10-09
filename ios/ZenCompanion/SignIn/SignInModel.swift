@@ -63,7 +63,8 @@ final class SignInModel {
             )
         } catch {
             finishing = false
-            self.error = error.localizedDescription
+            // One friendly line; HTTP bodies and server detail stay in the log.
+            self.error = error.zenUserMessage
             return nil
         }
     }

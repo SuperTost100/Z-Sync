@@ -115,6 +115,17 @@
         }
       }
     },
+    "browser.pin_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't save this tab."
+          }
+        }
+      }
+    },
     "browser.pin_no_space" : {
       "extractionState" : "manual",
       "localizations" : {

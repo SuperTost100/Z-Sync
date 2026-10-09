@@ -226,6 +226,42 @@ final class MiniBrowserModelTests: XCTestCase {
         XCTAssertEqual(writer.saved.first?.folderId, "folder-1")
     }
 
+    /// Navigating away while the banner is up saves the page that was pinned,
+    /// right away, instead of whatever page shows when the timer fires.
+    func testNavigatingAwayCommitsThePinnedPage() async {
+        let pinned = URL(string: "https://pin.example/a")!
+        let (model, writer) = makeModel(initialURL: pinned)
+        model.currentURL = pinned
+        model.pageTitle = "Page A"
+
+        model.triggerPinBanner(spaces: [space("a")], fallbackSpace: space("a"))
+        let next = URL(string: "https://pin.example/b")!
+        model.currentURL = next
+        model.pageTitle = "Page B"
+        model.currentURLDidChange(next, isAddressFocused: false)
+        await model.waitForPinSave()
+
+        XCTAssertFalse(model.hasPendingPinSave)
+        XCTAssertEqual(writer.saved.map(\.url), [pinned])
+        XCTAssertEqual(writer.saved.first?.title, "Page A")
+    }
+
+    /// A failed write tells the user instead of failing silently.
+    func testPinFailureShowsNotice() async {
+        let writer = FakePinWriter()
+        writer.error = SyncError.conflict
+        let (model, _) = makeModel(initialURL: URL(string: "https://pin.example/page")!, writer: writer)
+
+        model.triggerPinBanner(spaces: [space("a")], fallbackSpace: space("a"))
+        model.commitPendingPinSave()
+        await model.waitForPinSave()
+
+        XCTAssertEqual(
+            model.pinNotice,
+            "\(String(localized: "browser.pin_failed")) \(SyncError.conflict.zenUserMessage)"
+        )
+    }
+
     func testFallbackOutcomeShowsNotice() async {
         let writer = FakePinWriter()
         writer.result = ZenCompanion.AddTabOutcome.fallback(recordId: "fallback-id")
@@ -280,6 +316,8 @@ private final class FakePinWriter: PinWriting {
     private(set) var saved: [Saved] = []
     /// Outcome returned to the model; defaults to a successful pinned save.
     var result: ZenCompanion.AddTabOutcome = ZenCompanion.AddTabOutcome.pinned(recordId: "pin-id")
+    /// When set, the write throws this instead of returning `result`.
+    var error: Error?
 
     @discardableResult
     func addTab(
@@ -290,6 +328,7 @@ private final class FakePinWriter: PinWriting {
         kind: ZenCompanion.SaveKind
     ) async throws -> ZenCompanion.AddTabOutcome {
         saved.append(Saved(url: url, title: title, spaceId: spaceId, folderId: folderId, kind: kind))
+        if let error { throw error }
         return result
     }
 }
