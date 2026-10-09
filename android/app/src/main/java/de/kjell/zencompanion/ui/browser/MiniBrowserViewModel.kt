@@ -120,6 +120,14 @@ class MiniBrowserViewModel(
         )
     }
 
+    /**
+     * The page to reopen when the screen is recreated for the same launch
+     * (theme or font change), or null for a new launch. A new launch must not
+     * see the previous launch's page before [startNewLaunch] runs.
+     */
+    fun restoredUrl(launchKey: Int): String? =
+        if (this.launchKey == launchKey) _state.value.currentUrl.ifEmpty { null } else null
+
     // MARK: - Chrome state
 
     fun onAddressTextChange(value: TextFieldValue) {
