@@ -1,0 +1,9 @@
+appId: de.kjell.zencompanion
+---
+- runFlow: common_enter_demo.yaml
+- tapOn: "Search"
+- inputText: "example.com"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "example.com"
+    timeout: 20000

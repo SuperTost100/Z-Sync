@@ -1,0 +1,30 @@
+# Typed input: host.tld loads, script and site: queries search instead.
+appId: de.kjell.zencompanion
+---
+- runFlow: common_enter_demo.yaml
+- tapOn: "Search"
+- inputText: "example.com"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "example.com"
+    timeout: 20000
+- tapOn: "example.com"
+- eraseText: 40
+- inputText: "javascript:alert(1)"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "duckduckgo.com"
+    timeout: 20000
+- tapOn: "duckduckgo.com"
+- eraseText: 40
+- inputText: "site:example.com"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "duckduckgo.com"
+    timeout: 20000
+- tapOn:
+    text: "Close"
+    rightOf: "Pin Tab"
+- extendedWaitUntil:
+    visible: "Work"
+    timeout: 10000

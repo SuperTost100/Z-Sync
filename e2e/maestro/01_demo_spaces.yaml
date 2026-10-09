@@ -1,0 +1,20 @@
+# Demo mode shows spaces, switches spaces and deletes a tab.
+appId: de.kjell.zencompanion
+---
+- runFlow: common_enter_demo.yaml
+- assertVisible: "Work"
+- assertVisible: "GitHub"
+- tapOn: "Personal"
+- extendedWaitUntil:
+    visible: "Personal"
+    timeout: 5000
+- tapOn: "Work"
+- longPressOn: "MDN Web Docs"
+- tapOn: "Delete tab"
+- extendedWaitUntil:
+    notVisible: "MDN Web Docs"
+    timeout: 5000
+- longPressOn: "Blog"
+- tapOn: "Unsplit tabs"
+- assertVisible: "Blog"
+- assertVisible: "Not affiliated with Mozilla or Zen Browser."

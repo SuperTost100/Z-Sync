@@ -1,0 +1,6 @@
+appId: de.kjell.zencompanion
+---
+- extendedWaitUntil:
+    visible: "Pin Tab"
+    timeout: 15000
+- assertVisible: "example.com"

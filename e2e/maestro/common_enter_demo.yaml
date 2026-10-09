@@ -1,0 +1,14 @@
+appId: de.kjell.zencompanion
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Sign in with Mozilla account"
+    timeout: 30000
+- tapOn:
+    text: "Z-Sync"
+    repeat: 5
+    delay: 100
+- extendedWaitUntil:
+    visible: "Sample data.*"
+    timeout: 15000

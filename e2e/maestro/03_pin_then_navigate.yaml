@@ -1,0 +1,26 @@
+# Pinning a page and navigating away within the banner time saves the
+# pinned page, not the next one.
+appId: de.kjell.zencompanion
+---
+- runFlow: common_enter_demo.yaml
+- tapOn: "Search"
+- inputText: "example.com"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "example.com"
+    timeout: 20000
+- tapOn: "Pin Tab"
+- tapOn: "example.com"
+- eraseText: 40
+- inputText: "wikipedia.org"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "wikipedia.org"
+    timeout: 20000
+- tapOn:
+    text: "Close"
+    rightOf: "Pin Tab"
+- extendedWaitUntil:
+    visible: "Example Domain"
+    timeout: 10000
+- assertNotVisible: "Wikipedia, the free encyclopedia"
