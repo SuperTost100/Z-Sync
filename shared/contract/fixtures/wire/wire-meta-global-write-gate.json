@@ -1,0 +1,64 @@
+{
+  "contract": 1,
+  "id": "wire-meta-global-write-gate",
+  "purpose": "Decides from the unencrypted meta/global payload whether this client may write to the spaces collection. Writes are allowed when the record is absent, when no spaces engine entry exists, or when the spaces engine version is at most 3 and storageVersion is 5 or absent. A newer engine version, another storage version, a non-numeric version, or an unparseable payload blocks writes.",
+  "cases": [
+    {
+      "id": "record-absent",
+      "input": { "payload": null },
+      "expect": { "writesAllowed": true }
+    },
+    {
+      "id": "current-engine-version",
+      "input": {
+        "payload": "{\"syncID\":\"g1\",\"storageVersion\":5,\"engines\":{\"spaces\":{\"version\":3,\"syncID\":\"s1\"},\"tabs\":{\"version\":1,\"syncID\":\"t1\"}},\"declined\":[]}"
+      },
+      "expect": { "writesAllowed": true }
+    },
+    {
+      "id": "older-engine-version",
+      "input": {
+        "payload": "{\"syncID\":\"g1\",\"storageVersion\":5,\"engines\":{\"spaces\":{\"version\":2,\"syncID\":\"s1\"}}}"
+      },
+      "expect": { "writesAllowed": true }
+    },
+    {
+      "id": "newer-engine-version",
+      "input": {
+        "payload": "{\"syncID\":\"g1\",\"storageVersion\":5,\"engines\":{\"spaces\":{\"version\":4,\"syncID\":\"s1\"}}}"
+      },
+      "expect": { "writesAllowed": false }
+    },
+    {
+      "id": "spaces-engine-missing",
+      "input": {
+        "payload": "{\"syncID\":\"g1\",\"storageVersion\":5,\"engines\":{\"tabs\":{\"version\":1,\"syncID\":\"t1\"}}}"
+      },
+      "expect": { "writesAllowed": true }
+    },
+    {
+      "id": "engines-missing",
+      "input": { "payload": "{\"syncID\":\"g1\",\"storageVersion\":5}" },
+      "expect": { "writesAllowed": true }
+    },
+    {
+      "id": "storage-version-mismatch",
+      "input": {
+        "payload": "{\"syncID\":\"g1\",\"storageVersion\":6,\"engines\":{\"spaces\":{\"version\":3,\"syncID\":\"s1\"}}}"
+      },
+      "expect": { "writesAllowed": false }
+    },
+    {
+      "id": "engine-version-string",
+      "input": {
+        "payload": "{\"syncID\":\"g1\",\"storageVersion\":5,\"engines\":{\"spaces\":{\"version\":\"3\",\"syncID\":\"s1\"}}}"
+      },
+      "expect": { "writesAllowed": false }
+    },
+    {
+      "id": "payload-unparseable",
+      "input": { "payload": "{not json" },
+      "expect": { "writesAllowed": false }
+    }
+  ]
+}

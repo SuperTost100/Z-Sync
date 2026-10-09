@@ -76,11 +76,13 @@ actor SyncClient {
         guard let payload = record["payload"] as? String else { throw SyncError.crypto("crypto/keys") }
         let plain = try SyncCrypto.decryptBSO(payloadJSON: payload, keys: syncKeys)
         let obj = try JSONSerialization.jsonObject(with: plain) as? [String: Any] ?? [:]
+        // SPEC §7.5: a short or malformed bundle is a crypto error, never a crash.
         func bundle(from array: [Any]?) throws -> SyncCrypto.KeyBundle {
-            guard let encB64 = array?[0] as? String,
-                  let hmacB64 = array?[1] as? String,
-                  let enc = Data(base64Encoded: encB64),
-                  let hmac = Data(base64Encoded: hmacB64)
+            guard let array, array.count >= 2,
+                  let encB64 = array[0] as? String,
+                  let hmacB64 = array[1] as? String,
+                  let enc = Data(base64Encoded: encB64), enc.count == 32,
+                  let hmac = Data(base64Encoded: hmacB64), hmac.count == 32
             else { throw SyncError.crypto("collection key") }
             return SyncCrypto.KeyBundle(encryptionKey: enc, hmacKey: hmac)
         }
@@ -134,34 +136,50 @@ actor SyncClient {
         return out
     }
 
+    /// The plain-JSON `meta/global` payload, or nil when the record is absent.
+    /// Feeds the write gate in `SpacesSyncService.metaGlobalAllowsWrites`.
+    func metaGlobalPayload() async throws -> String? {
+        let record = try await Self.requestJSON(
+            creds: creds,
+            method: "GET",
+            path: "/storage/meta/global",
+            allowMissing: true,
+            transport: transport
+        )
+        return record["payload"] as? String
+    }
+
     /// Follows the server's pagination (`X-Weave-Next-Offset`) so accounts
     /// with more records than one page returns still get everything.
     func getRecords(collection: String) async throws -> [[String: Any]] {
-        let (records, _) = try await Self.readCollection(
+        try await Self.readCollection(
             creds: creds,
             collection: collection,
             transport: transport,
             conditional: false
-        )
-        return records
+        ).records
     }
 
     /// Consistent collection read for conflict-safe writes (SPEC §7.2):
     /// captures the collection's `X-Last-Modified` and, while paginating,
     /// re-sends it as `X-If-Unmodified-Since` so later pages cannot mix two
     /// server states. A 412 mid-read restarts the whole read once; a second
-    /// failure throws `SyncError.conflict`.
+    /// failure throws `SyncError.conflict`. A missing collection timestamp is
+    /// reported as `"0"` and a truncated read throws `SyncError.incompleteRead`
+    /// (SPEC §7.2, §7.5), so callers never write from a partial view.
     func getCollectionWithMetadata(
         collection: String
     ) async throws -> (records: [[String: Any]], lastModified: String?) {
         for attempt in 0..<2 {
             do {
-                return try await Self.readCollection(
+                let read = try await Self.readCollection(
                     creds: creds,
                     collection: collection,
                     transport: transport,
                     conditional: true
                 )
+                guard read.complete else { throw SyncError.incompleteRead }
+                return (read.records, read.lastModified ?? "0")
             } catch let error as SyncError where error.isConflict {
                 if attempt == 1 { throw SyncError.conflict }
             }
@@ -174,11 +192,14 @@ actor SyncClient {
         collection: String,
         transport: SyncHTTPTransport,
         conditional: Bool
-    ) async throws -> (records: [[String: Any]], lastModified: String?) {
+    ) async throws -> (records: [[String: Any]], lastModified: String?, complete: Bool) {
         var records: [[String: Any]] = []
         var offset: String?
         var pages = 0
         var lastModified: String?
+        // True once the server says there is nothing more to read; a page cap
+        // or a stuck offset token leaves it false.
+        var complete = false
         while pages < 50 {
             var path = "/storage/\(collection)?full=1&limit=2500"
             if let offset, !offset.isEmpty,
@@ -207,17 +228,27 @@ actor SyncClient {
                 lastModified = http.header("X-Last-Modified")
             }
             pages += 1
-            guard http.statusCode != 404, !data.isEmpty else { break }
-            let page = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+            guard http.statusCode != 404, !data.isEmpty else {
+                complete = true
+                break
+            }
+            // A malformed page is an error, never an empty page (SPEC §7.5).
+            guard let page = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+                throw SyncError.network("malformed \(collection) page")
+            }
             records += page
             // Stop unless the server both signals a next page AND delivered
             // content this round; an unchanged token means it is stuck.
             let nextOffset = http.header("X-Weave-Next-Offset")
-            guard let nextOffset, !nextOffset.isEmpty, !page.isEmpty, nextOffset != offset else { break }
+            guard let nextOffset, !nextOffset.isEmpty, !page.isEmpty else {
+                complete = true
+                break
+            }
+            guard nextOffset != offset else { break }
             offset = nextOffset
         }
-        Self.log.debug("getRecords \(collection, privacy: .public): \(pages, privacy: .public) pages, \(records.count, privacy: .public) records")
-        return (records, lastModified)
+        Self.log.debug("getRecords \(collection, privacy: .public): \(pages, privacy: .public) pages, \(records.count, privacy: .public) records, complete \(complete, privacy: .public)")
+        return (records, lastModified, complete)
     }
 
     private static let log = Logger(subsystem: "de.kjell.zencompanion", category: "sync-client")

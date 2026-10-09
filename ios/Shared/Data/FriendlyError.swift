@@ -13,7 +13,7 @@ extension Error {
         }
         if let sync = self as? SyncError {
             switch sync {
-            case .totpRequired, .notSignedIn:
+            case .totpRequired, .notSignedIn, .targetMissing, .incompleteRead, .unsupportedSyncVersion:
                 return sync.localizedDescription
             case .storageUnavailable:
                 return String(localized: "error.storage_unavailable")

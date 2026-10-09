@@ -55,7 +55,7 @@ class ContractFixtureTests {
     /** Every golden fixture must load with contract == 1 and id == basename. */
     @Test
     fun everyGoldenFixtureLoads() {
-        assertEquals(29, FixtureLoader.allFixtureNames.size)
+        assertEquals(30, FixtureLoader.allFixtureNames.size)
         for (name in FixtureLoader.allFixtureNames) {
             FixtureLoader.json(name)
             FixtureLoader.data(name)
@@ -225,6 +225,28 @@ class ContractFixtureTests {
                 "case '${case.getString("id")}'",
                 case.getJSONObject("expect").getString("normalTabsCapability"),
                 actual.name.lowercase(),
+            )
+        }
+    }
+
+    // MARK: meta/global write gate (SPEC §7.5)
+
+    /**
+     * `wire-meta-global-write-gate`: an absent record or a known engine version
+     * allows writes; a newer or unreadable one blocks them.
+     */
+    @Test
+    fun metaGlobalWriteGateFixture() {
+        val cases = FixtureLoader.cases("wire-meta-global-write-gate")
+        assertTrue(cases.length() > 0)
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            val input = case.getJSONObject("input")
+            val payload = if (input.isNull("payload")) null else input.getString("payload")
+            assertEquals(
+                "case '${case.getString("id")}'",
+                case.getJSONObject("expect").getBoolean("writesAllowed"),
+                SpacesSyncService.metaGlobalAllowsWrites(payload),
             )
         }
     }

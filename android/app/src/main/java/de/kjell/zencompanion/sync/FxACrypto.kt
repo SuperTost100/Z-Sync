@@ -12,6 +12,15 @@ sealed class SyncError(message: String?) : Exception(message) {
 
     /** Conditional write lost its race twice (SPEC §7.2); caller re-reads. */
     class Conflict(detail: String? = null) : SyncError(detail)
+
+    /** The space a write targets is absent or deleted on the server (SPEC §7.5). */
+    object TargetMissing : SyncError(null)
+
+    /** The planning read was truncated, malformed or undecryptable (SPEC §7.5). */
+    object IncompleteRead : SyncError(null)
+
+    /** `meta/global` reports an unknown Spaces engine or storage version (SPEC §7.5). */
+    object UnsupportedSyncVersion : SyncError(null)
     object NotSignedIn : SyncError(null)
     object TotpRequired : SyncError(null)
     object StorageUnavailable : SyncError(null)

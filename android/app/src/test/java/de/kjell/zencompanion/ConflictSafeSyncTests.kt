@@ -138,7 +138,7 @@ class ConflictSafeSyncTests {
     }
 
     @Test
-    fun addTabFallsBackToCachedSnapshotWhenSpaceIsNotOnTheServer() {
+    fun addTabRefusesWhenSpaceIsNotOnTheServer() {
         val server = ConflictServer(keys, syncKeys)
         val cachedSpace = ZenSpaces.ZenSpace(
             id = "space-1",
@@ -155,13 +155,23 @@ class ConflictSafeSyncTests {
         )
         SnapshotCache.cache(ZenSpaces.ZenSnapshot(listOf(cachedSpace), emptyMap(), 0L))
 
-        val newId = runBlocking {
-            SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1")
-        }.recordId
+        // SPEC §7.5: the cache never stands in for a missing parent.
+        assertThrows<SyncError.TargetMissing> {
+            runBlocking { SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1") }
+        }
+        assertTrue(server.requests.none { it.method == "POST" })
+        assertNull(server.cleartext("space-1"))
+    }
 
-        val batch = server.batch(server.requests.single { it.method == "POST" })
-        assertEquals(listOf(newId, "space-1"), batch.map { it.getString("id") })
-        assertEquals(listOf("cached-tab", newId), server.children(batch, "space-1"))
+    @Test
+    fun addTabRefusesWhenSpaceIsTombstoned() {
+        val server = ConflictServer(keys, syncKeys)
+        server.putRecord("space-1", JSONObject().put("id", "space-1").put("deleted", true))
+
+        assertThrows<SyncError.TargetMissing> {
+            runBlocking { SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1") }
+        }
+        assertTrue(server.requests.none { it.method == "POST" })
     }
 
     @Test
@@ -303,7 +313,7 @@ class ConflictSafeSyncTests {
         }
 
         assertEquals(2, desktopWrites)
-        assertEquals(listOf("GET", "POST", "GET", "POST"), server.requests.map { it.method })
+        assertEquals(listOf("GET", "GET", "POST", "GET", "POST"), server.requests.map { it.method })
         assertEquals(cached, SnapshotCache.cachedSnapshotShared)
     }
 
@@ -336,10 +346,10 @@ class ConflictSafeSyncTests {
             runBlocking { SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1") }
             fail("expected SyncError.Conflict")
         } catch (expected: SyncError.Conflict) {
-            // Expected: a partial failure is not retried and must not update the cache.
+            // Expected: a partial failure is retried once, then must not update the cache.
         }
 
-        assertEquals(1, server.requests.count { it.method == "POST" })
+        assertEquals(2, server.requests.count { it.method == "POST" })
         assertEquals(cached, SnapshotCache.cachedSnapshotShared)
     }
 
@@ -462,6 +472,143 @@ class ConflictSafeSyncTests {
         assertEquals("60.00", server.cryptoKeysLastModified)
     }
 
+    // MARK: Write preconditions (SPEC §7.5)
+
+    @Test
+    fun partialPostFailureRetriesOnceAndCompletes() {
+        val server = ConflictServer(keys, syncKeys)
+        server.seedSpace("space-1", children = listOf("existing-1"))
+        server.forcedFailed = mapOf("space-1" to "server rejected")
+        var posts = 0
+        server.onBeforeRequest = { request ->
+            if (request.method == "POST") {
+                posts++
+                if (posts == 2) server.forcedFailed = emptyMap()
+            }
+        }
+
+        val newId = runBlocking {
+            SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1")
+        }.recordId
+
+        assertEquals(2, posts)
+        assertEquals(listOf("existing-1", newId), server.children("space-1"))
+        assertTrue(server.cleartext(newId) != null)
+    }
+
+    @Test
+    fun addTabRefusesUndecryptableTargetSpace() {
+        val server = ConflictServer(keys, syncKeys)
+        server.seedSpace("space-1", children = emptyList())
+        server.undecryptableIds += "space-1"
+
+        assertThrows<SyncError.IncompleteRead> {
+            runBlocking { SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1") }
+        }
+        assertTrue(server.requests.none { it.method == "POST" })
+    }
+
+    @Test
+    fun deleteRefusesWhenAnyRecordIsUndecryptable() {
+        val server = ConflictServer(keys, syncKeys)
+        server.seedSpace("space-1", children = listOf("t1"))
+        server.seedTab("t1", "space-1")
+        server.seedFolder("folder-x", workspaceUuid = "space-1", children = listOf("t1"))
+        server.undecryptableIds += "folder-x"
+
+        assertThrows<SyncError.IncompleteRead> {
+            runBlocking { SpacesSyncService.deleteTab(client(server), id = "t1") }
+        }
+        assertTrue(server.requests.none { it.method == "POST" })
+    }
+
+    @Test
+    fun addTabRewriteKeepsUnknownFields() {
+        val server = ConflictServer(keys, syncKeys)
+        server.seedSpace("space-1", children = emptyList())
+        server.putRecord(
+            "folder-1",
+            JSONObject()
+                .put("id", "folder-1")
+                .put("kind", "folder")
+                .put("futureField", "keep me")
+                .put(
+                    "data",
+                    JSONObject()
+                        .put("folderId", "folder-1")
+                        .put("workspaceUuid", "space-1")
+                        .put("children", JSONArray(listOf("t1")))
+                        .put(
+                            "live",
+                            JSONObject().put("type", "rss").put("state", JSONObject().put("url", "https://example.com/feed.xml")),
+                        ),
+                ),
+        )
+
+        val newId = runBlocking {
+            SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1", folderId = "folder-1")
+        }.recordId
+
+        val folder = server.cleartext("folder-1")!!
+        assertEquals("keep me", folder.getString("futureField"))
+        assertEquals("rss", folder.getJSONObject("data").getJSONObject("live").getString("type"))
+        assertEquals(listOf("t1", newId), server.children("folder-1"))
+    }
+
+    @Test
+    fun newerEngineVersionBlocksWrites() {
+        val server = ConflictServer(keys, syncKeys)
+        server.seedSpace("space-1", children = listOf("t1"))
+        server.seedTab("t1", "space-1")
+        server.metaGlobalPayload = """{"storageVersion":5,"engines":{"spaces":{"version":4,"syncID":"s"}}}"""
+
+        assertThrows<SyncError.UnsupportedSyncVersion> {
+            runBlocking { SpacesSyncService.addTab(client(server), "https://new.example", "New", "space-1") }
+        }
+        assertThrows<SyncError.UnsupportedSyncVersion> {
+            runBlocking { SpacesSyncService.deleteTab(client(server), id = "t1") }
+        }
+        assertEquals(
+            listOf("GET /storage/meta/global", "GET /storage/meta/global"),
+            server.requests.map { "${it.method} ${it.url.file}" },
+        )
+    }
+
+    @Test
+    fun missingCollectionTimestampReadsAsZero() {
+        val transport = stubTransport { SyncHttpResponse(404, emptyMap(), ByteArray(0)) }
+        val read = SyncClient(creds, keys, emptyMap(), transport).getCollectionWithMetadata("spaces")
+        assertTrue(read.records.isEmpty())
+        assertEquals("0", read.lastModified)
+    }
+
+    @Test
+    fun truncatedConditionalReadIsIncomplete() {
+        var count = 0
+        val transport = stubTransport {
+            count++
+            SyncHttpResponse(
+                200,
+                mapOf("x-last-modified" to "m1", "x-weave-next-offset" to "o$count"),
+                """[{"id":"r$count"}]""".toByteArray(Charsets.UTF_8),
+            )
+        }
+        assertThrows<SyncError.IncompleteRead> {
+            SyncClient(creds, keys, emptyMap(), transport).getCollectionWithMetadata("spaces")
+        }
+        assertEquals(50, count)
+    }
+
+    @Test
+    fun malformedPageIsAnError() {
+        val transport = stubTransport {
+            SyncHttpResponse(200, mapOf("x-last-modified" to "m1"), "{oops".toByteArray(Charsets.UTF_8))
+        }
+        assertThrows<SyncError.Network> {
+            SyncClient(creds, keys, emptyMap(), transport).getRecords("spaces")
+        }
+    }
+
     // MARK: Legacy switch-off path
 
     @Test
@@ -476,6 +623,7 @@ class ConflictSafeSyncTests {
 
         assertEquals(
             listOf(
+                "GET /storage/meta/global",
                 "GET /storage/spaces?full=1&limit=2500",
                 "PUT /storage/spaces/$newId",
                 "PUT /storage/spaces/space-1",
@@ -503,6 +651,7 @@ class ConflictSafeSyncTests {
 
         assertEquals(
             listOf(
+                "GET /storage/meta/global",
                 "GET /storage/spaces?full=1&limit=2500",
                 "PUT /storage/spaces/t1",
                 "PUT /storage/spaces/space-1",
@@ -585,6 +734,21 @@ class ConflictSafeSyncTests {
 
     // MARK: Helpers
 
+    private fun stubTransport(respond: (SyncHttpRequest) -> SyncHttpResponse): SyncHttpTransport =
+        object : SyncHttpTransport {
+            override fun execute(request: SyncHttpRequest): SyncHttpResponse = respond(request)
+        }
+
+    private inline fun <reified T : Throwable> assertThrows(block: () -> Unit) {
+        try {
+            block()
+        } catch (expected: Throwable) {
+            if (expected is T) return
+            fail("expected ${T::class.simpleName}, got $expected")
+        }
+        fail("expected ${T::class.simpleName}")
+    }
+
     private fun keyArray(bundle: SyncCrypto.KeyBundle): JSONArray = JSONArray()
         .put(java.util.Base64.getEncoder().encodeToString(bundle.encryptionKey))
         .put(java.util.Base64.getEncoder().encodeToString(bundle.hmacKey))
@@ -647,6 +811,7 @@ private class ConflictServer(
         onBeforeRequest?.invoke(request)
         val path = request.url.file
         return when {
+            request.method == "GET" && path == "/storage/meta/global" -> metaGlobalGet()
             request.method == "GET" && path.startsWith("/storage/prefs") -> prefsPage()
             request.method == "GET" && path.startsWith("/storage/spaces") -> collectionPage(request)
             request.method == "POST" && path == "/storage/spaces" -> collectionPost(request)
@@ -801,9 +966,10 @@ private class ConflictServer(
             return SyncHttpResponse(412, mapOf("x-last-modified" to lastModified), ByteArray(0))
         }
         val all = records.entries.map { (id, cleartext) ->
+            val recordKeys = if (id in undecryptableIds) otherKeys else keys
             JSONObject()
                 .put("id", id)
-                .put("payload", SyncCrypto.encryptBSO(cleartext.toString().toByteArray(Charsets.UTF_8), keys))
+                .put("payload", SyncCrypto.encryptBSO(cleartext.toString().toByteArray(Charsets.UTF_8), recordKeys))
         }
         val headers = linkedMapOf("x-last-modified" to lastModified)
         val offset = request.url.query
@@ -820,6 +986,13 @@ private class ConflictServer(
             JSONArray(slice)
         }
         return SyncHttpResponse(200, headers, body.toString().toByteArray(Charsets.UTF_8))
+    }
+
+    /** Serves the plain `meta/global` record, or 404 when none is set. */
+    private fun metaGlobalGet(): SyncHttpResponse {
+        val payload = metaGlobalPayload ?: return SyncHttpResponse(404, emptyMap(), ByteArray(0))
+        val body = JSONObject().put("id", "global").put("payload", payload)
+        return SyncHttpResponse(200, emptyMap(), body.toString().toByteArray(Charsets.UTF_8))
     }
 
     /** Serves the single encrypted `prefs` record (or none). */
@@ -909,6 +1082,13 @@ private class ConflictServer(
     }
 
     // MARK: Test knobs
+
+    /** Plain `meta/global` payload; null answers 404. */
+    var metaGlobalPayload: String? = null
+
+    /** Records served encrypted with keys the client doesn't hold. */
+    val undecryptableIds = mutableSetOf<String>()
+    private val otherKeys = SyncCrypto.KeyBundle(ByteArray(32) { 0x33 }, ByteArray(32) { 0x44 })
 
     /** Forces per-record POST failures: id -> server reason. */
     var forcedFailed: Map<String, String> = emptyMap()

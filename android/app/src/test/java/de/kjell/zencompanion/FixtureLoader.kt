@@ -30,6 +30,7 @@ internal object FixtureLoader {
         "wire-ignored-records",
         "wire-layout-basic",
         "wire-layout-essentials-dup-url",
+        "wire-meta-global-write-gate",
         "wire-prefs-normal-tabs",
         "wire-prefs-normal-tabs-capability",
         "wire-space-basic",

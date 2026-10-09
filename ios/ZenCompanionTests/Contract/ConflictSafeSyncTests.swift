@@ -151,9 +151,10 @@ final class ConflictSafeSyncTests: XCTestCase {
         XCTAssertEqual(spaceData["children"] as? [String], [newId])
     }
 
-    /// (2c) When the live collection lacks the space, the cached snapshot is
-    /// the parent source, exactly like the legacy path.
-    func testAddTabFallsBackToCachedSpaceWhenCollectionLacksIt() async throws {
+    /// (2c) When the live collection lacks the space, the write is refused
+    /// as `targetMissing`. The cached snapshot is never used to build a
+    /// parent record (SPEC §7.5), so nothing is posted.
+    func testAddTabRefusesWhenCollectionLacksSpace() async throws {
         let server = MutableSyncServer()
         SpacesSyncService.cache(ZenSnapshot(
             spaces: [ZenSpace(
@@ -165,20 +166,34 @@ final class ConflictSafeSyncTests: XCTestCase {
         ))
         let client = makeClient(transport: server)
 
-        let outcome = try await SpacesSyncService.addTab(
-            client: client,
-            url: URL(string: "https://example.com")!,
-            title: "Example",
-            to: "space-1"
-        )
-        let newId = outcome.recordId
+        await assertSyncError(.targetMissing) {
+            _ = try await SpacesSyncService.addTab(
+                client: client,
+                url: URL(string: "https://example.com")!,
+                title: "Example",
+                to: "space-1"
+            )
+        }
+        XCTAssertTrue(postRequests(server).isEmpty, "a missing parent must not be synthesized")
+        XCTAssertNil(server.payload(collection: "spaces", id: "space-1"))
+    }
 
-        let records = try postRecords(try XCTUnwrap(postRequests(server).first))
-        XCTAssertEqual(Set(records.compactMap { $0["id"] as? String }), ["space-1", newId])
-        let spaceData = try recordData(bso(records, id: "space-1"))
-        XCTAssertEqual(spaceData["uuid"] as? String, "space-1")
-        XCTAssertEqual(spaceData["name"] as? String, "Cached")
-        XCTAssertEqual(spaceData["children"] as? [String], ["t1", newId])
+    /// (2d) A space deleted on another device is missing too: its tombstone
+    /// must not be overwritten with a resurrected space.
+    func testAddTabRefusesWhenSpaceIsTombstoned() async throws {
+        let server = MutableSyncServer()
+        try server.seedRawCleartext(collection: "spaces", id: "space-1", cleartext: ["id": "space-1", "deleted": true], keys: defaultKeys)
+        let client = makeClient(transport: server)
+
+        await assertSyncError(.targetMissing) {
+            _ = try await SpacesSyncService.addTab(
+                client: client,
+                url: URL(string: "https://example.com")!,
+                title: "Example",
+                to: "space-1"
+            )
+        }
+        XCTAssertTrue(postRequests(server).isEmpty)
     }
 
     // MARK: - addTab, normal kind (SPEC §7 write gating)
@@ -415,9 +430,9 @@ final class ConflictSafeSyncTests: XCTestCase {
         XCTAssertEqual(SpacesSyncService.cachedSnapshot()?.spaces, seeded.spaces)
     }
 
-    /// (3b) A 200 POST that rejects a requested record (`failed`/missing from
-    /// `success`) surfaces as `SyncError.conflict` without a retry and leaves
-    /// the cache untouched.
+    /// (3b) A 200 POST that keeps rejecting a requested record (`failed` or
+    /// missing from `success`) is retried once, then surfaces as
+    /// `SyncError.conflict` and leaves the cache untouched.
     func testPartialPostFailureThrowsConflictAndLeavesCache() async throws {
         let server = MutableSyncServer()
         try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "name": "Space", "children": []])
@@ -443,7 +458,7 @@ final class ConflictSafeSyncTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(postRequests(server).count, 1, "a partial failure is not retried")
+        XCTAssertEqual(postRequests(server).count, 2, "a partial failure is retried exactly once")
         XCTAssertEqual(SpacesSyncService.cachedSnapshot()?.spaces, seeded.spaces)
     }
 
@@ -674,6 +689,208 @@ final class ConflictSafeSyncTests: XCTestCase {
         XCTAssertEqual(put.headers["X-If-Unmodified-Since"], "0")
     }
 
+    // MARK: - Write preconditions (SPEC §7.5)
+
+    /// A partial outcome is retried once with the same record id, so the
+    /// retry completes the write without duplicating the child.
+    func testPartialPostFailureRetriesOnceAndCompletes() async throws {
+        let server = MutableSyncServer()
+        try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "name": "Space", "children": ["t1"]])
+        server.forcedFailed = ["space-1": "server rejected"]
+        var posts = 0
+        server.beforeWrite = { request in
+            guard request.method == "POST" else { return }
+            posts += 1
+            if posts == 2 { server.forcedFailed = [:] }
+        }
+        let client = makeClient(transport: server)
+
+        let outcome = try await SpacesSyncService.addTab(
+            client: client,
+            url: URL(string: "https://example.com")!,
+            title: "Example",
+            to: "space-1"
+        )
+
+        XCTAssertEqual(postRequests(server).count, 2)
+        let space = try XCTUnwrap(server.cleartext(collection: "spaces", id: "space-1", keys: defaultKeys))
+        XCTAssertEqual((space["data"] as? [String: Any])?["children"] as? [String], ["t1", outcome.recordId])
+        XCTAssertNotNil(server.payload(collection: "spaces", id: outcome.recordId))
+    }
+
+    /// A target space that exists but doesn't decrypt is an incomplete read,
+    /// not a missing space, and nothing is written.
+    func testAddTabRefusesUndecryptableTargetSpace() async throws {
+        let server = MutableSyncServer()
+        try server.seedCleartext(
+            collection: "spaces",
+            id: "space-1",
+            kind: "space",
+            data: ["uuid": "space-1", "children": []],
+            keys: otherKeys
+        )
+        let client = makeClient(transport: server)
+
+        await assertSyncError(.incompleteRead) {
+            _ = try await SpacesSyncService.addTab(
+                client: client,
+                url: URL(string: "https://example.com")!,
+                title: "Example",
+                to: "space-1"
+            )
+        }
+        XCTAssertTrue(postRequests(server).isEmpty)
+    }
+
+    /// A delete rewrites every parent of the removed id, so one record it
+    /// can't decrypt refuses the whole delete.
+    func testDeleteRefusesWhenAnyRecordIsUndecryptable() async throws {
+        let server = MutableSyncServer()
+        try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "children": ["t1"]])
+        try seed(server, id: "t1", kind: "tab", data: ["tabId": "t1", "url": "https://t1.example"])
+        try server.seedCleartext(
+            collection: "spaces",
+            id: "folder-x",
+            kind: "folder",
+            data: ["folderId": "folder-x", "children": ["t1"]],
+            keys: otherKeys
+        )
+        let client = makeClient(transport: server)
+
+        await assertSyncError(.incompleteRead) {
+            try await SpacesSyncService.deleteTab(client: client, id: "t1")
+        }
+        XCTAssertTrue(postRequests(server).isEmpty)
+    }
+
+    /// Rewrites start from the decrypted record: unknown top-level fields
+    /// and unknown data fields such as a folder's `live` object survive.
+    func testAddTabRewriteKeepsUnknownFields() async throws {
+        let server = MutableSyncServer()
+        try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "children": []])
+        let live: [String: Any] = ["type": "rss", "state": ["url": "https://example.com/feed.xml", "interval": 30]]
+        try server.seedRawCleartext(collection: "spaces", id: "folder-1", cleartext: [
+            "id": "folder-1",
+            "kind": "folder",
+            "futureField": "keep me",
+            "data": [
+                "folderId": "folder-1",
+                "workspaceUuid": "space-1",
+                "children": ["t1"],
+                "live": live,
+            ],
+        ], keys: defaultKeys)
+        let client = makeClient(transport: server)
+
+        let outcome = try await SpacesSyncService.addTab(
+            client: client,
+            url: URL(string: "https://example.com")!,
+            title: "Example",
+            to: "space-1",
+            folderId: "folder-1"
+        )
+
+        let folder = try XCTUnwrap(server.cleartext(collection: "spaces", id: "folder-1", keys: defaultKeys))
+        XCTAssertEqual(folder["futureField"] as? String, "keep me")
+        let data = try XCTUnwrap(folder["data"] as? [String: Any])
+        XCTAssertEqual((data["live"] as? [String: Any])?["type"] as? String, "rss")
+        XCTAssertEqual(data["children"] as? [String], ["t1", outcome.recordId])
+    }
+
+    /// A `children` list with a non-string entry keeps its string entries in
+    /// order on both add and delete instead of being wiped.
+    func testMixedChildrenKeepStringEntries() async throws {
+        let server = MutableSyncServer()
+        try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "children": ["t1", 42, "t2"]])
+        try seed(server, id: "t1", kind: "tab", data: ["tabId": "t1", "url": "https://t1.example"])
+        let client = makeClient(transport: server)
+
+        let outcome = try await SpacesSyncService.addTab(
+            client: client,
+            url: URL(string: "https://example.com")!,
+            title: "Example",
+            to: "space-1"
+        )
+        var space = try XCTUnwrap(server.cleartext(collection: "spaces", id: "space-1", keys: defaultKeys))
+        XCTAssertEqual((space["data"] as? [String: Any])?["children"] as? [String], ["t1", "t2", outcome.recordId])
+
+        try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "children": ["t1", 42, "t2"]])
+        try await SpacesSyncService.deleteTab(client: client, id: "t1")
+        space = try XCTUnwrap(server.cleartext(collection: "spaces", id: "space-1", keys: defaultKeys))
+        XCTAssertEqual((space["data"] as? [String: Any])?["children"] as? [String], ["t2"])
+    }
+
+    /// A newer Zen Spaces engine in `meta/global` blocks both writes before
+    /// anything is read or posted.
+    func testNewerEngineVersionBlocksWrites() async throws {
+        let server = MutableSyncServer()
+        try seed(server, id: "space-1", kind: "space", data: ["uuid": "space-1", "children": ["t1"]])
+        server.setRecord(
+            collection: "meta",
+            id: "global",
+            payload: #"{"storageVersion":5,"engines":{"spaces":{"version":4,"syncID":"s"}}}"#
+        )
+        let client = makeClient(transport: server)
+
+        await assertSyncError(.unsupportedSyncVersion) {
+            _ = try await SpacesSyncService.addTab(
+                client: client,
+                url: URL(string: "https://example.com")!,
+                title: "Example",
+                to: "space-1"
+            )
+        }
+        await assertSyncError(.unsupportedSyncVersion) {
+            try await SpacesSyncService.deleteTab(client: client, id: "t1")
+        }
+        XCTAssertTrue(postRequests(server).isEmpty)
+        XCTAssertEqual(server.requests.map { $0.url.path }, ["/1.0/sync/1.5/storage/meta/global", "/1.0/sync/1.5/storage/meta/global"])
+    }
+
+    /// A collection the server has no timestamp for is conditioned on "0".
+    func testMissingCollectionTimestampReadsAsZero() async throws {
+        let transport = FakeSyncTransport()
+        transport.responder = { _, _ in .init(status: 404) }
+        let client = makeClient(transport: transport)
+
+        let (records, lastModified) = try await client.getCollectionWithMetadata(collection: "spaces")
+
+        XCTAssertTrue(records.isEmpty)
+        XCTAssertEqual(lastModified, "0")
+    }
+
+    /// A read cut off by the page cap can't plan a write.
+    func testTruncatedConditionalReadIsIncomplete() async throws {
+        let transport = FakeSyncTransport()
+        transport.responder = { index, _ in
+            .init(
+                status: 200,
+                headers: ["x-last-modified": "m1", "x-weave-next-offset": "o\(index)"],
+                body: self.listBody([["id": "r\(index)"]])
+            )
+        }
+        let client = makeClient(transport: transport)
+
+        await assertSyncError(.incompleteRead) {
+            _ = try await client.getCollectionWithMetadata(collection: "spaces")
+        }
+        XCTAssertEqual(transport.requests.count, 50)
+    }
+
+    /// A page that isn't a JSON array is an error, never an empty page.
+    func testMalformedPageIsAnError() async throws {
+        let transport = FakeSyncTransport()
+        transport.responder = { _, _ in .init(status: 200, headers: ["x-last-modified": "m1"], body: Data("{oops".utf8)) }
+        let client = makeClient(transport: transport)
+
+        do {
+            _ = try await client.getRecords(collection: "spaces")
+            XCTFail("expected an error")
+        } catch let error as SyncError {
+            guard case .network = error else { return XCTFail("expected .network, got \(error)") }
+        }
+    }
+
     // MARK: - Legacy switch OFF
 
     /// (9) With the switch OFF both mutations keep today's exact sequential
@@ -693,23 +910,24 @@ final class ConflictSafeSyncTests: XCTestCase {
         )
         let newId = outcome.recordId
 
-        XCTAssertEqual(server.requests.map(\.method), ["GET", "PUT", "PUT"])
+        XCTAssertEqual(server.requests.map(\.method), ["GET", "GET", "PUT", "PUT"])
+        XCTAssertTrue(server.requests[0].url.absoluteString.hasSuffix("/storage/meta/global"))
         XCTAssertTrue(
-            server.requests[0].url.absoluteString.hasSuffix("/storage/spaces?full=1&limit=2500"),
-            server.requests[0].url.absoluteString
+            server.requests[1].url.absoluteString.hasSuffix("/storage/spaces?full=1&limit=2500"),
+            server.requests[1].url.absoluteString
         )
-        XCTAssertTrue(server.requests[1].url.absoluteString.hasSuffix("/storage/spaces/\(newId)"))
-        XCTAssertTrue(server.requests[2].url.absoluteString.hasSuffix("/storage/spaces/space-1"))
+        XCTAssertTrue(server.requests[2].url.absoluteString.hasSuffix("/storage/spaces/\(newId)"))
+        XCTAssertTrue(server.requests[3].url.absoluteString.hasSuffix("/storage/spaces/space-1"))
         for request in server.requests {
             XCTAssertNil(request.headers["X-If-Unmodified-Since"], request.method)
         }
         let tabPut = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: XCTUnwrap(server.requests[1].body)
+            with: XCTUnwrap(server.requests[2].body)
         ) as? [String: Any])
         XCTAssertEqual(tabPut.count, 1, "legacy PUT body is a single {payload} object")
         XCTAssertNotNil(tabPut["payload"])
         let spacePut = try XCTUnwrap(JSONSerialization.jsonObject(
-            with: XCTUnwrap(server.requests[2].body)
+            with: XCTUnwrap(server.requests[3].body)
         ) as? [String: Any])
         let spacePayload = try XCTUnwrap(spacePut["payload"] as? String)
         let spaceCleartext = try JSONSerialization.jsonObject(
@@ -721,10 +939,11 @@ final class ConflictSafeSyncTests: XCTestCase {
         server.clearRequests()
         try await SpacesSyncService.deleteTab(client: client, id: "t1")
 
-        XCTAssertEqual(server.requests.map(\.method), ["GET", "PUT", "PUT"])
-        XCTAssertTrue(server.requests[0].url.absoluteString.hasSuffix("/storage/spaces?full=1&limit=2500"))
-        XCTAssertTrue(server.requests[1].url.absoluteString.hasSuffix("/storage/spaces/t1"))
-        XCTAssertTrue(server.requests[2].url.absoluteString.hasSuffix("/storage/spaces/space-1"))
+        XCTAssertEqual(server.requests.map(\.method), ["GET", "GET", "PUT", "PUT"])
+        XCTAssertTrue(server.requests[0].url.absoluteString.hasSuffix("/storage/meta/global"))
+        XCTAssertTrue(server.requests[1].url.absoluteString.hasSuffix("/storage/spaces?full=1&limit=2500"))
+        XCTAssertTrue(server.requests[2].url.absoluteString.hasSuffix("/storage/spaces/t1"))
+        XCTAssertTrue(server.requests[3].url.absoluteString.hasSuffix("/storage/spaces/space-1"))
         for request in server.requests {
             XCTAssertNil(request.headers["X-If-Unmodified-Since"], request.method)
         }
@@ -841,6 +1060,28 @@ final class ConflictSafeSyncTests: XCTestCase {
             hawkKey: Data("hawk-key".utf8),
             expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
         )
+    }
+
+    /// Keys the client doesn't hold, for records it can't decrypt.
+    private let otherKeys = SyncCrypto.KeyBundle(
+        encryptionKey: Data(repeating: 0x33, count: 32),
+        hmacKey: Data(repeating: 0x44, count: 32)
+    )
+
+    private func assertSyncError(
+        _ expected: SyncError,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ body: () async throws -> Void
+    ) async {
+        do {
+            try await body()
+            XCTFail("expected SyncError.\(expected)", file: file, line: line)
+        } catch let error as SyncError {
+            XCTAssertEqual(String(describing: error), String(describing: expected), file: file, line: line)
+        } catch {
+            XCTFail("expected SyncError.\(expected), got \(error)", file: file, line: line)
+        }
     }
 
     private func makeClient(transport: SyncHTTPTransport) -> SyncClient {
@@ -972,6 +1213,19 @@ final class MutableSyncServer: SyncHTTPTransport {
         keys: SyncCrypto.KeyBundle
     ) throws {
         let cleartext: [String: Any] = ["id": id, "kind": kind, "data": data]
+        let payload = try SyncCrypto.encryptBSO(
+            plaintext: try JSONSerialization.data(withJSONObject: cleartext),
+            keys: keys
+        )
+        setRecord(collection: collection, id: id, payload: payload)
+    }
+
+    func seedRawCleartext(
+        collection: String,
+        id: String,
+        cleartext: [String: Any],
+        keys: SyncCrypto.KeyBundle
+    ) throws {
         let payload = try SyncCrypto.encryptBSO(
             plaintext: try JSONSerialization.data(withJSONObject: cleartext),
             keys: keys

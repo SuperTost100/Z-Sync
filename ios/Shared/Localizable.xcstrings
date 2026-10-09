@@ -319,6 +319,17 @@
         }
       }
     },
+    "error.incomplete_read" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Z-Sync couldn't read all of your Zen data, so it didn't change anything. Pull to refresh and try again."
+          }
+        }
+      }
+    },
     "error.interrupted" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -374,6 +385,17 @@
         }
       }
     },
+    "error.target_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This space isn't in Zen anymore. Pull to refresh and pick another one."
+          }
+        }
+      }
+    },
     "error.totp" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -381,6 +403,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "A confirmation code is required."
+          }
+        }
+      }
+    },
+    "error.unsupported_sync_version" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zen changed how it syncs spaces. Update Z-Sync before making changes from your phone."
           }
         }
       }

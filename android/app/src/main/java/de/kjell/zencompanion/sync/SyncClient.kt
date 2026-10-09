@@ -92,6 +92,15 @@ class SyncClient internal constructor(
         return out
     }
 
+    /**
+     * The plain-JSON `meta/global` payload, or null when the record is absent.
+     * Feeds the write gate in [SpacesSyncService.metaGlobalAllowsWrites].
+     */
+    fun metaGlobalPayload(): String? {
+        val record = requestJSONObject(method = "GET", path = "/storage/meta/global", allowMissing = true)
+        return record.opt("payload") as? String
+    }
+
     /** Follows `X-Weave-Next-Offset` pagination like the Swift version. */
     fun getRecords(collection: String): List<JSONObject> {
         val records = mutableListOf<JSONObject>()
@@ -117,7 +126,9 @@ class SyncClient internal constructor(
      * `X-Last-Modified` on the first page and conditions every subsequent page
      * on it, so a concurrent writer makes the read fail cleanly instead of
      * splicing two versions together. One mid-read 412 restarts the whole read
-     * once; a second one surfaces as [SyncError.Conflict].
+     * once; a second one surfaces as [SyncError.Conflict]. A missing collection
+     * timestamp is reported as `"0"` and a truncated read throws
+     * [SyncError.IncompleteRead] (SPEC §7.2, §7.5).
      */
     fun getCollectionWithMetadata(collection: String): CollectionRead {
         var restarts = 0
@@ -127,6 +138,9 @@ class SyncClient internal constructor(
             var pages = 0
             var lastModified: String? = null
             var preconditionFailed = false
+            // True once the server says there is nothing more to read; a page
+            // cap or a stuck offset token leaves it false.
+            var complete = false
             while (pages < 50) {
                 var path = "/storage/$collection?full=1&limit=2500"
                 if (!offset.isNullOrEmpty()) {
@@ -147,10 +161,17 @@ class SyncClient internal constructor(
                 val result = pageFrom(response)
                 records += result.page
                 pages++
-                if (result.nextOffset.isNullOrEmpty() || result.page.isEmpty() || result.nextOffset == offset) break
+                if (result.nextOffset.isNullOrEmpty() || result.page.isEmpty()) {
+                    complete = true
+                    break
+                }
+                if (result.nextOffset == offset) break
                 offset = result.nextOffset
             }
-            if (!preconditionFailed) return CollectionRead(records, lastModified)
+            if (!preconditionFailed) {
+                if (!complete) throw SyncError.IncompleteRead
+                return CollectionRead(records, lastModified ?: "0")
+            }
             if (restarts >= 1) throw SyncError.Conflict("collection '$collection' changed while reading")
             restarts++
         }
@@ -306,8 +327,11 @@ class SyncClient internal constructor(
             val arr = array as? JSONArray ?: throw SyncError.Crypto("collection key")
             val encB64 = arr.optString(0)
             val hmacB64 = arr.optString(1)
+            // SPEC §7.5: two base64 strings of 32 bytes each, or a crypto error.
+            if (arr.length() < 2) throw SyncError.Crypto("collection key")
             val enc = SyncCrypto.b64decode(encB64) ?: throw SyncError.Crypto("collection key")
             val hmac = SyncCrypto.b64decode(hmacB64) ?: throw SyncError.Crypto("collection key")
+            if (enc.size != 32 || hmac.size != 32) throw SyncError.Crypto("collection key")
             return SyncCrypto.KeyBundle(enc, hmac)
         }
 
@@ -375,11 +399,14 @@ class SyncClient internal constructor(
     private fun pageFrom(raw: SyncHttpResponse): PageResult {
         if (raw.statusCode == 404 || raw.body.isEmpty()) return PageResult(emptyList(), null)
         val list = mutableListOf<JSONObject>()
-        runCatching {
-            val arr = JSONArray(String(raw.body, Charsets.UTF_8))
-            for (i in 0 until arr.length()) {
-                (arr.opt(i) as? JSONObject)?.let { list.add(it) }
-            }
+        // A malformed page is an error, never an empty page (SPEC §7.5).
+        val arr = try {
+            JSONArray(String(raw.body, Charsets.UTF_8))
+        } catch (_: org.json.JSONException) {
+            throw SyncError.Network("malformed collection page")
+        }
+        for (i in 0 until arr.length()) {
+            (arr.opt(i) as? JSONObject)?.let { list.add(it) }
         }
         return PageResult(list, raw.header("X-Weave-Next-Offset"))
     }

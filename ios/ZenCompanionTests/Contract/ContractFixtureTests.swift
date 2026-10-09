@@ -20,7 +20,7 @@ final class ContractFixtureTests: XCTestCase {
     /// every fixture must declare contract 1 (the loader fatalErrors loudly
     /// on drift; the explicit asserts below double-check).
     func testEveryFixtureDeclaresContractVersion1() {
-        XCTAssertEqual(ContractFixtures.all.count, 29, "fixture list must track shared/contract/fixtures")
+        XCTAssertEqual(ContractFixtures.all.count, 30, "fixture list must track shared/contract/fixtures")
         for name in ContractFixtures.all {
             let obj = ContractFixtures.json(name)
             XCTAssertEqual(obj["contract"] as? Int, 1, name)
@@ -123,6 +123,25 @@ final class ContractFixtureTests: XCTestCase {
             XCTAssertEqual(
                 capability.rawValue,
                 expect["normalTabsCapability"] as? String,
+                "case \(caseId)"
+            )
+        }
+    }
+
+    // MARK: - meta/global write gate (SPEC §7.5)
+
+    /// `wire-meta-global-write-gate`: an absent record or a known engine
+    /// version allows writes; a newer or unreadable one blocks them.
+    func testMetaGlobalWriteGate() {
+        let cases = ContractFixtures.cases("wire-meta-global-write-gate")
+        XCTAssertFalse(cases.isEmpty)
+        for record in cases {
+            let caseId = record["id"] as? String ?? "?"
+            let input = record["input"] as! [String: Any]
+            let expect = record["expect"] as! [String: Any]
+            XCTAssertEqual(
+                SpacesSyncService.metaGlobalAllowsWrites(payload: input["payload"] as? String),
+                expect["writesAllowed"] as? Bool,
                 "case \(caseId)"
             )
         }
