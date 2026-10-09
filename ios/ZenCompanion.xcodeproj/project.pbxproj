@@ -37,6 +37,7 @@
 		27180C75E5CCC59C773459FA /* SyncTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3552D5DA41C1C1B82D696E6 /* SyncTransport.swift */; };
 		27831AD28445C5DBD8A29B5D /* ThemeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCFAC8D0D4BFBA2D7F31FB5 /* ThemeViews.swift */; };
 		27CAB27D68A9A70789F75342 /* wire-layout-essentials-dup-url.json in Resources */ = {isa = PBXBuildFile; fileRef = 2AF753107E93E06C0B5BB74A /* wire-layout-essentials-dup-url.json */; };
+		517A19811A1E1A5C7BC4AB8D /* wire-meta-global-write-gate.json in Resources */ = {isa = PBXBuildFile; fileRef = ADBC23B851179E6191F902B2 /* wire-meta-global-write-gate.json */; };
 		28604D25C827A860F682A48F /* hawk-authorization-resource.json in Resources */ = {isa = PBXBuildFile; fileRef = D6B2E5DDE9E186B8D068C8C6 /* hawk-authorization-resource.json */; };
 		2969CF6E58512036995C9F91 /* PinDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACD7FC0B20567414EAE19CFE /* PinDestination.swift */; };
 		2B0403C592FD7785E9F2D9A8 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF50823FBB077FEA5EF2366E /* ShareViewController.swift */; };
@@ -237,6 +238,7 @@
 		2974B96AFD7C7DC3CBFE0563 /* ZenTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZenTheme.swift; sourceTree = "<group>"; };
 		29F9DA91553F0C57AF371056 /* MiniBrowserModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniBrowserModelTests.swift; sourceTree = "<group>"; };
 		2AF753107E93E06C0B5BB74A /* wire-layout-essentials-dup-url.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wire-layout-essentials-dup-url.json"; sourceTree = "<group>"; };
+		ADBC23B851179E6191F902B2 /* wire-meta-global-write-gate.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wire-meta-global-write-gate.json"; sourceTree = "<group>"; };
 		2E6A8BD7B182DCF575D5AE43 /* wire-prefs-normal-tabs-capability.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wire-prefs-normal-tabs-capability.json"; sourceTree = "<group>"; };
 		30B15F4C45B25CAC1BDBEE15 /* ZenIconTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZenIconTests.swift; sourceTree = "<group>"; };
 		3114878D25BAD6BD1A27FE18 /* AccountStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStoreTests.swift; sourceTree = "<group>"; };
@@ -506,6 +508,7 @@
 				8164E7ADF678B75D18EA7685 /* wire-ignored-records.json */,
 				8134F90DC307742DD6DDA3D3 /* wire-layout-basic.json */,
 				2AF753107E93E06C0B5BB74A /* wire-layout-essentials-dup-url.json */,
+				ADBC23B851179E6191F902B2 /* wire-meta-global-write-gate.json */,
 				2E6A8BD7B182DCF575D5AE43 /* wire-prefs-normal-tabs-capability.json */,
 				C875053C0AA79C537E08E4FF /* wire-prefs-normal-tabs.json */,
 				0102972EB7416CBD731E896F /* wire-space-basic.json */,
@@ -845,6 +848,7 @@
 				A90297C4A75408C872515D85 /* wire-ignored-records.json in Resources */,
 				2D80D1E1620EF113008D2151 /* wire-layout-basic.json in Resources */,
 				27CAB27D68A9A70789F75342 /* wire-layout-essentials-dup-url.json in Resources */,
+				517A19811A1E1A5C7BC4AB8D /* wire-meta-global-write-gate.json in Resources */,
 				688AA84A8CD820C24127F98D /* wire-prefs-normal-tabs-capability.json in Resources */,
 				036FAFD6C41196100301C543 /* wire-prefs-normal-tabs.json in Resources */,
 				9BC01167FB8CF4BAB2C2D151 /* wire-space-basic.json in Resources */,
