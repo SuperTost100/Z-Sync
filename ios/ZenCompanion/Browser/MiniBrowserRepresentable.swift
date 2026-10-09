@@ -70,7 +70,12 @@ struct MiniBrowserRepresentable: UIViewRepresentable {
                 decisionHandler(.allow)
                 return
             }
-            ExternalBrowser.open(url)
+            if BrowserNavigationPolicy.opensExternally(
+                userTapped: navigationAction.navigationType == .linkActivated,
+                isMainFrame: navigationAction.targetFrame?.isMainFrame ?? true
+            ) {
+                ExternalBrowser.open(url)
+            }
             decisionHandler(.cancel)
         }
 

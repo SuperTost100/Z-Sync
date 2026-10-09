@@ -344,13 +344,19 @@ struct FxAWebView: UIViewRepresentable {
         /// Only the real FxA auth host may drive this WebView. Kept as a
         /// static helper so navigation and JS gating classify identically.
         static func isAllowedAuthHost(_ url: URL) -> Bool {
-            url.host?.lowercased() == "accounts.firefox.com"
+            url.scheme?.lowercased() == "https"
+                && url.host?.lowercased() == "accounts.firefox.com"
+                && (url.port == nil || url.port == 443)
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             // Every frame (hostile iframes included) can post to this
             // handler; only messages originating from the auth host count.
-            guard message.frameInfo.securityOrigin.host.lowercased() == "accounts.firefox.com" else { return }
+            let origin = message.frameInfo.securityOrigin
+            guard origin.protocol.lowercased() == "https",
+                  origin.host.lowercased() == "accounts.firefox.com",
+                  origin.port == 0 || origin.port == 443
+            else { return }
             let body: [String: Any]
             if let dict = message.body as? [String: Any] {
                 body = dict

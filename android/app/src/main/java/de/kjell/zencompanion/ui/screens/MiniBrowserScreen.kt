@@ -1,5 +1,7 @@
 package de.kjell.zencompanion.ui.screens
 
+import android.net.Uri
+import de.kjell.zencompanion.ui.components.openURLExternally
 import android.annotation.SuppressLint
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
@@ -168,7 +170,12 @@ fun MiniBrowserScreen(
                 onSubmitAddress = { input ->
                     val target = viewModel.submitAddress(input)
                     if (target.isNotEmpty()) {
-                        webView?.loadUrl(target)
+                        // A typed mailto:/tel: is an explicit request to leave the browser.
+                        if (isWebScheme(Uri.parse(target).scheme)) {
+                            webView?.loadUrl(target)
+                        } else {
+                            openURLExternally(context, target)
+                        }
                     }
                     focusManager.clearFocus()
                     keyboardController?.hide()

@@ -2,27 +2,41 @@ package de.kjell.zencompanion.ui.screens
 
 import androidx.compose.ui.graphics.Color
 import de.kjell.zencompanion.data.SearchEngines
-import java.net.URI
 
 /**
- * Resolves raw user address/search input to a fully-qualified URL.
+ * Resolves raw user address/search input to a fully-qualified URL: a page
+ * address when [typedUrl] recognizes one, otherwise a search.
  */
 fun formatBrowserInput(query: String): String {
     val trimmed = query.trim()
     if (trimmed.isEmpty()) return ""
+    return typedUrl(trimmed) ?: SearchEngines.current.formatQuery(trimmed)
+}
 
-    val hasScheme = runCatching {
-        val uri = URI(trimmed)
-        !uri.scheme.isNullOrEmpty()
-    }.getOrDefault(false) || trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)
+/** Schemes a person may type as-is. Anything else (javascript:, file:, intent:, …) searches. */
+private val TYPED_SCHEMES = setOf("http", "https", "about", "mailto", "tel")
+private val SCHEME_PREFIX = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
+private val LOCALHOST = Regex("^localhost(?::\\d{1,5})?(?:[/?#]\\S*)?$", RegexOption.IGNORE_CASE)
+private val HOST_LIKE = Regex("^([^\\s/?#:.]+(?:\\.[^\\s/?#:.]+)+)(?::\\d{1,5})?(?:[/?#]\\S*)?$")
+private val IPV4 = Regex("^\\d{1,3}(?:\\.\\d{1,3}){3}$")
 
-    if (hasScheme) {
-        return trimmed
-    }
-    if (trimmed.contains('.') && !trimmed.contains(' ')) {
-        return "https://$trimmed"
-    }
-    return SearchEngines.current.formatQuery(trimmed)
+/**
+ * The URL that [text] names, or null when it should be searched. Same rules
+ * as iOS `BrowserInput.typedURL`:
+ * - an `http`, `https`, `about`, `mailto` or `tel` URL is taken as typed;
+ * - `localhost` and IPv4 hosts (with optional port and path) get `http://`;
+ * - `host.tld` with an optional port and path gets `https://` when the last
+ *   label has a letter, so `3.14` and `site:example.com` search.
+ */
+internal fun typedUrl(text: String): String? {
+    if (text.any { it.isWhitespace() }) return null
+    val scheme = SCHEME_PREFIX.find(text)?.groupValues?.get(1)?.lowercase()
+    if (scheme != null && scheme in TYPED_SCHEMES) return text
+    if (LOCALHOST.matches(text)) return "http://$text"
+    val hostname = HOST_LIKE.matchEntire(text)?.groupValues?.get(1) ?: return null
+    if (IPV4.matches(hostname)) return "http://$text"
+    if (hostname.substringAfterLast('.').none { it.isLetter() }) return null
+    return "https://$text"
 }
 
 /**

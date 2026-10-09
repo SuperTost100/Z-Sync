@@ -53,7 +53,7 @@ internal fun MiniBrowserWebView(
                     setSupportZoom(true)
                     builtInZoomControls = true
                     displayZoomControls = false
-                    mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 }
                 webViewClient = object : WebViewClient() {
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -111,10 +111,14 @@ internal fun MiniBrowserWebView(
                             browserPackages = browserPackages(context),
                             ownPackage = context.packageName,
                         )
-                        if (action == BrowserLinkAction.OPEN_EXTERNALLY) {
-                            return openURLExternally(context, request.url)
+                        return when (action) {
+                            BrowserLinkAction.OPEN_EXTERNALLY -> {
+                                openURLExternally(context, request.url)
+                                true
+                            }
+                            BrowserLinkAction.BLOCK -> true
+                            BrowserLinkAction.LOAD_IN_WEBVIEW -> false
                         }
-                        return false
                     }
                 }
                 webChromeClient = object : WebChromeClient() {
@@ -129,7 +133,11 @@ internal fun MiniBrowserWebView(
 
                 val loadTarget = formatBrowserInput(initialUrl ?: "")
                 if (loadTarget.isNotEmpty()) {
-                    loadUrl(loadTarget)
+                    if (isWebScheme(Uri.parse(loadTarget).scheme)) {
+                        loadUrl(loadTarget)
+                    } else {
+                        openURLExternally(ctx, loadTarget)
+                    }
                 }
                 onWebViewCreated(this)
             }

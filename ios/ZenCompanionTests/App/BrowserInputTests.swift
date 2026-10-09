@@ -36,8 +36,52 @@ final class BrowserInputTests: XCTestCase {
         )
         XCTAssertEqual(
             BrowserInput.resolve("192.168.0.1:8080", engine: .duckDuckGo),
-            URL(string: "https://192.168.0.1:8080")
+            URL(string: "http://192.168.0.1:8080"),
+            "IP addresses and localhost use http, like Safari and Chrome"
         )
+    }
+
+    /// Same table as Android `BrowserInputTests`: page addresses resolve.
+    func testPageAddressesResolve() {
+        let cases: [(String, String)] = [
+            ("example.com", "https://example.com"),
+            ("github.com/torvalds/linux", "https://github.com/torvalds/linux"),
+            ("example.com:8080/x", "https://example.com:8080/x"),
+            ("localhost", "http://localhost"),
+            ("localhost:3000/api", "http://localhost:3000/api"),
+            ("192.168.0.1:8080", "http://192.168.0.1:8080"),
+            ("https://example.com/path?q=1", "https://example.com/path?q=1"),
+            ("HTTP://Example.com", "HTTP://Example.com"),
+            ("mailto:support@kjell.cc", "mailto:support@kjell.cc"),
+            ("tel:+391234567", "tel:+391234567"),
+            ("about:blank", "about:blank"),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(BrowserInput.typedURL(input)?.absoluteString, expected, input)
+        }
+    }
+
+    /// Same table as Android: anything that isn't a page address searches,
+    /// including script and file URLs.
+    func testEverythingElseSearches() {
+        let searches = [
+            "site:example.com",
+            "javascript:alert(1)",
+            "file:///etc/hosts",
+            "intent://scan#Intent;scheme=zxing;end",
+            "data:text/html,hi",
+            "3.14",
+            "hello.world foo",
+            "zen companion",
+        ]
+        for input in searches {
+            XCTAssertNil(BrowserInput.typedURL(input), input)
+            XCTAssertEqual(
+                BrowserInput.resolve(input, engine: .duckDuckGo),
+                SearchEngine.duckDuckGo.searchURL(for: input),
+                input
+            )
+        }
     }
 
     func testDotWithSpaceSearches() {

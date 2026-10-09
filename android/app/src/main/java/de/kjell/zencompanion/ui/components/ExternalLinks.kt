@@ -18,7 +18,27 @@ private fun parseExternalIntent(uri: Uri): Intent? {
     if (!uri.scheme.equals("intent", ignoreCase = true)) {
         return Intent(Intent.ACTION_VIEW, uri)
     }
-    return runCatching { Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME) }.getOrNull()
+    val intent = runCatching { Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME) }.getOrNull()
+        ?: return null
+    return sanitizeWebIntent(intent)
+}
+
+/**
+ * Restricts an `intent://` link from a web page to what Chrome allows: it may
+ * only reach activities that declare themselves browsable, never a named
+ * component or selector, and it can't grant access to content URIs.
+ */
+internal fun sanitizeWebIntent(intent: Intent): Intent {
+    intent.addCategory(Intent.CATEGORY_BROWSABLE)
+    intent.component = null
+    intent.selector = null
+    intent.flags = intent.flags and (
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+            Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+        ).inv()
+    return intent
 }
 
 private fun startExternally(context: Context, intent: Intent): Boolean {
@@ -29,9 +49,12 @@ private fun startExternally(context: Context, intent: Intent): Boolean {
         context.startActivity(intent)
         true
     } catch (_: Exception) {
-        val fallbackUrl = intent.getStringExtra("browser_fallback_url") ?: return false
+        val fallback = intent.getStringExtra("browser_fallback_url")?.let(Uri::parse) ?: return false
+        // A fallback may only be a web page, never another intent or script.
+        val scheme = fallback.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return false
         runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl)))
+            context.startActivity(Intent(Intent.ACTION_VIEW, fallback))
         }.isSuccess
     }
 }
