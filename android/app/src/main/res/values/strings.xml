@@ -74,6 +74,8 @@
     <string name="error_auth">Couldn\'t sign in to your Mozilla account. Try signing out and back in.</string>
     <string name="error_crypto">Your sync data couldn\'t be decrypted. Sign out and back in to refresh your keys.</string>
     <string name="error_network">Network problem while contacting Mozilla sync.</string>
+    <string name="home_refresh_failed">Couldn\'t refresh. Tap to try again.</string>
+    <string name="home_delete_failed">Couldn\'t delete this tab.</string>
     <string name="error_conflict">Another device changed this data at the same time. Please try again.</string>
     <string name="error_not_signed_in">Sign in to Z-Sync first.</string>
     <string name="error_totp">A confirmation code is required.</string>

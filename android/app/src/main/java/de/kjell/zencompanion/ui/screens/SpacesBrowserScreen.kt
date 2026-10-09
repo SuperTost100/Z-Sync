@@ -3,6 +3,7 @@ package de.kjell.zencompanion.ui.screens
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -175,12 +180,7 @@ fun SpacesBrowserScreen(
                         if (toolbarPlacement == ToolbarPlacement.BOTTOM) {
                             actionBar()
                         }
-                        Text(
-                            text = stringResource(R.string.home_disclaimer),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
-                            modifier = Modifier.padding(bottom = 6.dp),
-                        )
+                        StatusLine(state = state, onRetry = onRefresh)
                     }
                 } else {
                     if (toolbarPlacement == ToolbarPlacement.BOTTOM) {
@@ -218,6 +218,43 @@ fun SpacesBrowserScreen(
                 showSyncSetup = false
                 onRefresh()
             },
+        )
+    }
+}
+
+/**
+ * The bottom line under the space switcher. Normally the disclaimer; a failed
+ * delete or a failed refresh over cached spaces takes its place so sync
+ * problems are visible without a banner. Mirrors iOS `statusLine`.
+ */
+@Composable
+private fun StatusLine(state: BrowserState, onRetry: () -> Unit) {
+    val ink = MaterialTheme.colorScheme.onSurface
+    val deleteError = state.deleteErrorRes
+    when {
+        deleteError != null -> Text(
+            text = stringResource(R.string.home_delete_failed) + " " + stringResource(deleteError),
+            style = MaterialTheme.typography.labelMedium,
+            color = ink.copy(alpha = 0.7f),
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 6.dp)
+                .semantics { liveRegion = LiveRegionMode.Polite },
+        )
+        state.loadErrorRes != null && !state.loading -> Text(
+            text = stringResource(R.string.home_refresh_failed),
+            style = MaterialTheme.typography.labelMedium,
+            color = ink.copy(alpha = 0.55f),
+            modifier = Modifier
+                .clickable(role = Role.Button, onClick = onRetry)
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+        )
+        else -> Text(
+            text = stringResource(R.string.home_disclaimer),
+            style = MaterialTheme.typography.labelSmall,
+            color = ink.copy(alpha = 0.3f),
+            modifier = Modifier.padding(bottom = 6.dp),
         )
     }
 }

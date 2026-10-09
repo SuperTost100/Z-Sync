@@ -405,6 +405,56 @@ class ZenSpacesDecoderTests {
     }
 
     @Test
+    fun makeSpaceShowsTabWhoseFolderIsMissing() {
+        val space = ZenSpaces.ZenSpaceRecord(
+            uuid = "space-1", name = "Work", icon = null, theme = null,
+            containerGuid = null, children = listOf("t1"),
+        )
+        fun rec(id: String) = ZenSpaces.ZenTabRecord(
+            tabId = id, url = "https://$id.de", title = id.uppercase(), icon = null,
+            containerGuid = null, essential = false, workspaceUuid = "space-1",
+            folderId = "gone", staticLabel = null, hasStaticIcon = null, defaultContainer = null,
+        )
+        val built = SpacesSyncService.makeSpace(
+            record = space,
+            allTabs = mapOf("t1" to rec("t1"), "t2" to rec("t2")),
+            folders = emptyMap(),
+            splits = emptyMap(),
+        )
+        assertEquals(listOf("t1", "t2"), built.pinned.map { it.id })
+    }
+
+    @Test
+    fun makeSpaceKeepsSplitMembersInFolderOrder() {
+        val space = ZenSpaces.ZenSpaceRecord(
+            uuid = "space-1", name = "Work", icon = null, theme = null,
+            containerGuid = null, children = listOf("f1"),
+        )
+        val folder = ZenSpaces.ZenFolderRecord(
+            folderId = "f1", name = "F", icon = null, workspaceUuid = "space-1",
+            parentFolderId = null, children = listOf("a", "split-1", "z"),
+        )
+        fun rec(id: String) = ZenSpaces.ZenTabRecord(
+            tabId = id, url = "https://$id.de", title = id.uppercase(), icon = null,
+            containerGuid = null, essential = false, workspaceUuid = "space-1",
+            folderId = "f1", staticLabel = null, hasStaticIcon = null, defaultContainer = null,
+        )
+        val split = ZenSpaces.ZenSplitRecord(
+            splitId = "split-1", gridType = "vsep", tabs = listOf("m1", "m2"),
+            workspaceUuid = "space-1", folderId = "f1",
+        )
+        val built = SpacesSyncService.makeSpace(
+            record = space,
+            allTabs = listOf("a", "m1", "m2", "z").associateWith { rec(it) },
+            folders = mapOf("f1" to folder),
+            splits = mapOf("split-1" to split),
+        )
+        val f = built.pinned.first() as? ZenSpaces.ZenItem.Folder
+            ?: return kotlin.run { fail("expected folder") }
+        assertEquals(listOf("a", "m1", "m2", "z"), f.folder.tabs.map { it.id })
+    }
+
+    @Test
     fun makeSpacePartitionsNormalSplit() {
         val space = ZenSpaces.ZenSpaceRecord(
             uuid = "space-1", name = "Work", icon = null, theme = null,

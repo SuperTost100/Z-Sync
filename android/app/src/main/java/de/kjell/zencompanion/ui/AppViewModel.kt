@@ -29,7 +29,9 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -45,6 +47,8 @@ data class BrowserState(
     val zeroSpaces: Boolean = false,
     val showShareTip: Boolean = false,
     val syncSetupHintDismissed: Boolean = false,
+    /** Reason a delete just failed, shown briefly in the status line. */
+    @StringRes val deleteErrorRes: Int? = null,
 ) {
     /**
      * Setup card while spaces synced but nothing in them: pinned/normal tabs
@@ -282,6 +286,8 @@ class AppViewModel(
     val reviewRequests: SharedFlow<Unit> = _reviewRequests
 
     private var reloadJob: Job? = null
+    /** A reload asked for while one was running; it runs right after. */
+    private var reloadQueued = false
     private var reviewJob: Job? = null
     private var reloading = false
     private var bootstrapped = false
@@ -413,9 +419,14 @@ class AppViewModel(
         }
     }
 
-    /** Automatic refresh (app start, stale snapshot) — silent when content is visible. */
+    /** Automatic refresh (app start, foreground, stale snapshot) — silent when content is visible. */
     fun reload() {
-        if (reloading) return
+        if (reloading) {
+            // A write's stale signal landed mid-fetch: that fetch may predate
+            // the write, so fetch again once it finishes instead of dropping it.
+            reloadQueued = true
+            return
+        }
         reloadJob?.cancel()
         reloadJob = viewModelScope.launch { reloadInternal(retryAttempted = false, manual = false) }
     }
@@ -427,7 +438,18 @@ class AppViewModel(
      * stays invisible instead of spinning in the pull-to-refresh indicator.
      */
     private suspend fun reloadInternal(retryAttempted: Boolean, manual: Boolean) {
-        if (reloading) return
+        if (reloading) {
+            reloadQueued = true
+            return
+        }
+        reloadOnce(retryAttempted, manual)
+        while (reloadQueued) {
+            reloadQueued = false
+            reloadOnce(retryAttempted = false, manual = false)
+        }
+    }
+
+    private suspend fun reloadOnce(retryAttempted: Boolean, manual: Boolean) {
         reloading = true
         val showSpinner = manual || _browser.value.snapshot.spaces.isEmpty()
         try {
@@ -468,12 +490,15 @@ class AppViewModel(
         } catch (e: Exception) {
             when {
                 e is CancellationException && !retryAttempted -> {
+                    // A cancelled job (sign-out, a newer reload) stops here;
+                    // only an interrupted request is worth one retry.
+                    currentCoroutineContext().ensureActive()
                     _browser.value = _browser.value.copy(
                         loading = false,
                         loadErrorRes = de.kjell.zencompanion.R.string.error_interrupted,
                     )
                     delay(700)
-                    reloadInternal(retryAttempted = true, manual = manual)
+                    reloadOnce(retryAttempted = true, manual = manual)
                     return
                 }
                 else -> {
@@ -550,7 +575,25 @@ class AppViewModel(
 
     fun deleteTab(id: String) {
         viewModelScope.launch {
-            runCatching { browserRepository.deleteTab(id) }
+            try {
+                browserRepository.deleteTab(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.e("SpacesSync", "delete failed: $e")
+                showDeleteError(FriendlyError.messageRes(e))
+            }
+        }
+    }
+
+    private var deleteErrorJob: Job? = null
+
+    private fun showDeleteError(@StringRes reason: Int) {
+        deleteErrorJob?.cancel()
+        _browser.value = _browser.value.copy(deleteErrorRes = reason)
+        deleteErrorJob = viewModelScope.launch {
+            delay(5_000)
+            _browser.value = _browser.value.copy(deleteErrorRes = null)
         }
     }
 

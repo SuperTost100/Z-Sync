@@ -150,6 +150,41 @@ final class BrowserModelTests: XCTestCase {
         XCTAssertEqual(repo.refreshCount, 2, "manual refresh must hit the network again after the wait")
     }
 
+    /// A reload asked for mid-fetch (e.g. a write's stale signal) runs after
+    /// the current fetch instead of being dropped.
+    func testReloadDuringReloadRunsAgainAfterward() async {
+        let repo = FakeSpacesRepository()
+        repo.cached = snapshot(["a"])
+        repo.refreshResult = .success(snapshot(["a"]))
+        repo.blockRefresh = true
+        let model = makeModel(repo)
+
+        let inFlight = Task { await model.reload() }
+        while !repo.didBlockRefresh { await Task.yield() }
+        await model.reload()
+        XCTAssertEqual(repo.refreshCount, 1)
+
+        repo.blockRefresh = false
+        repo.releaseRefresh()
+        await inFlight.value
+
+        XCTAssertEqual(repo.refreshCount, 2, "the queued reload must run once the first finishes")
+    }
+
+    /// A failed delete says so in the status line instead of failing silently.
+    func testFailedDeleteShowsMessage() async {
+        let repo = FakeSpacesRepository()
+        repo.deleteError = SyncError.conflict
+        let model = makeModel(repo)
+
+        await model.deleteTab(id: "t1")
+
+        XCTAssertEqual(
+            model.deleteError,
+            "\(String(localized: "home.delete_failed")) \(SyncError.conflict.zenUserMessage)"
+        )
+    }
+
     func testZeroSpacesClearsError() async {
         let repo = FakeSpacesRepository()
         repo.refreshResult = .failure(URLError(.timedOut))
@@ -314,7 +349,12 @@ private final class FakeSpacesRepository: SpacesRepository {
 
     func deleteCachedSnapshot() { cached = nil }
 
-    func deleteTab(id: String) async throws { deletedTabIds.append(id) }
+    var deleteError: Error?
+
+    func deleteTab(id: String) async throws {
+        deletedTabIds.append(id)
+        if let deleteError { throw deleteError }
+    }
 
     func releaseRefresh() {
         refreshContinuation?.resume()

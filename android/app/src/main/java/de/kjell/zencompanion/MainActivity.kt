@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -18,6 +19,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import de.kjell.zencompanion.review.PlayInAppReview
 import de.kjell.zencompanion.sync.ZenSpaces
@@ -120,6 +124,20 @@ private fun SpacesBrowserRoot(viewModel: AppViewModel) {
     var browserLaunchCounter by remember { mutableIntStateOf(0) }
     var showActivity by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    // Returning to the foreground (e.g. after sharing from another app)
+    // refreshes what's on screen, like iOS. The first start is the cold
+    // launch, which bootstrap already loads.
+    val lifecycleOwner = context as? LifecycleOwner
+    DisposableEffect(lifecycleOwner) {
+        var startedOnce = false
+        val observer = LifecycleEventObserver { _, event ->
+            if (event != Lifecycle.Event.ON_START) return@LifecycleEventObserver
+            if (startedOnce) viewModel.reload() else startedOnce = true
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.reviewRequests.collect {

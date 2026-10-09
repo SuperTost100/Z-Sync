@@ -24,6 +24,8 @@ final class BrowserModel {
     var loading = false
     var loadError: String?
     var reloading = false
+    /// A reload asked for while one was running; it runs right after.
+    private var reloadQueued = false
     /// Dedicated zero-spaces state (desktop sync not enabled / empty account),
     /// distinct from network errors in `loadError`.
     var zeroSpaces = false
@@ -222,7 +224,20 @@ final class BrowserModel {
     }
 
     func reload(retryAttempted: Bool = false) async {
-        guard !reloading else { return }
+        guard !reloading else {
+            // A write's stale signal landed mid-fetch: that fetch may predate
+            // the write, so fetch again once it finishes instead of dropping it.
+            reloadQueued = true
+            return
+        }
+        await reloadOnce(retryAttempted: retryAttempted)
+        while reloadQueued {
+            reloadQueued = false
+            await reloadOnce(retryAttempted: false)
+        }
+    }
+
+    private func reloadOnce(retryAttempted: Bool) async {
         reloading = true
         loading = true
         do {
@@ -263,7 +278,7 @@ final class BrowserModel {
                     reloading = false
                     loading = false
                     try? await Task.sleep(for: .milliseconds(700))
-                    await reload(retryAttempted: true)
+                    await reloadOnce(retryAttempted: true)
                     return
                 }
             } else {
@@ -399,7 +414,26 @@ final class BrowserModel {
     // MARK: - Tab deletion
 
     func deleteTab(id: String) async {
-        try? await repository.deleteTab(id: id)
+        do {
+            try await repository.deleteTab(id: id)
+        } catch {
+            Self.log.error("delete failed: \(String(describing: error), privacy: .public)")
+            showDeleteError(error.zenUserMessage)
+        }
+    }
+
+    /// Shown in the status line for a few seconds after a failed delete.
+    private(set) var deleteError: String?
+    private var deleteErrorTask: Task<Void, Never>?
+
+    private func showDeleteError(_ message: String) {
+        deleteError = "\(String(localized: "home.delete_failed")) \(message)"
+        deleteErrorTask?.cancel()
+        deleteErrorTask = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            deleteError = nil
+        }
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
