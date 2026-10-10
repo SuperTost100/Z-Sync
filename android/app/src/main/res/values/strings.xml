@@ -54,7 +54,7 @@
     <string name="sync_setup_note">Mozilla account sync alone doesn\'t include pinned tabs and workspaces — the sidebar sync switch is what powers this app.</string>
     <string name="sync_setup_refresh">Refresh now</string>
     <string name="sync_tip_share_title">Pin from any app</string>
-    <string name="sync_tip_share_body">Share a link from Safari or any app and pick a space — it lands in your pinned tabs.</string>
+    <string name="sync_tip_share_body">Share a link from any app and pick a space — it lands in your pinned tabs.</string>
     <string name="common_dismiss">Dismiss</string>
 
     <string name="tabs_empty">No tabs here yet.</string>
