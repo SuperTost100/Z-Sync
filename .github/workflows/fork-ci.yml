@@ -71,5 +71,10 @@ jobs:
         run: |
           SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d, reverse=True) if "iOS" in k for x in d[k] if x["name"].startswith("iPhone")))')
           set -o pipefail
+          status=0
           xcodebuild test -project ZenCompanion.xcodeproj -scheme ZenCompanion \
-            -destination "id=$SIM" CODE_SIGNING_ALLOWED=NO 2>&1 | tail -200
+            -destination "id=$SIM" CODE_SIGNING_ALLOWED=NO > xcodebuild.log 2>&1 || status=$?
+          tail -60 xcodebuild.log
+          echo "---- errors and failing tests ----"
+          grep -E "error:|: error|Test Case .* failed|XCTAssert|Fatal error" xcodebuild.log | head -80 || true
+          exit $status
