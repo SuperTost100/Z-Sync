@@ -174,14 +174,14 @@ final class BrowserModelTests: XCTestCase {
     /// A failed delete says so in the status line instead of failing silently.
     func testFailedDeleteShowsMessage() async {
         let repo = FakeSpacesRepository()
-        repo.deleteError = SyncError.conflict
+        repo.deleteError = ZenCompanion.SyncError.conflict
         let model = makeModel(repo)
 
         await model.deleteTab(id: "t1")
 
         XCTAssertEqual(
             model.deleteError,
-            "\(String(localized: "home.delete_failed")) \(SyncError.conflict.zenUserMessage)"
+            "\(String(localized: "home.delete_failed")) \(ZenCompanion.SyncError.conflict.zenUserMessage)"
         )
     }
 
