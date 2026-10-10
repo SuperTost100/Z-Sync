@@ -181,7 +181,7 @@ final class BrowserModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.deleteError,
-            "\(String(localized: "home.delete_failed")) \(ZenCompanion.SyncError.conflict.zenUserMessage)"
+            "\(String(localized: "home.delete_failed")) \(String(localized: "error.conflict"))"
         )
     }
 
