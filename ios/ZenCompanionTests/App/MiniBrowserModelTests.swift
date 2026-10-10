@@ -249,7 +249,7 @@ final class MiniBrowserModelTests: XCTestCase {
     /// A failed write tells the user instead of failing silently.
     func testPinFailureShowsNotice() async {
         let writer = FakePinWriter()
-        writer.error = SyncError.conflict
+        writer.error = ZenCompanion.SyncError.conflict
         let (model, _) = makeModel(initialURL: URL(string: "https://pin.example/page")!, writer: writer)
 
         model.triggerPinBanner(spaces: [space("a")], fallbackSpace: space("a"))
@@ -258,7 +258,7 @@ final class MiniBrowserModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.pinNotice,
-            "\(String(localized: "browser.pin_failed")) \(SyncError.conflict.zenUserMessage)"
+            "\(String(localized: "browser.pin_failed")) \(ZenCompanion.SyncError.conflict.zenUserMessage)"
         )
     }
 
