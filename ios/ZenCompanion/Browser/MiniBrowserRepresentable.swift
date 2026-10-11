@@ -81,7 +81,9 @@ struct MiniBrowserRepresentable: UIViewRepresentable {
             preferences: WKWebpagePreferences,
             decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
         ) {
-            preferences.preferredContentMode = model.requestsDesktopSite ? .desktop : .mobile
+            // `.recommended` keeps WebKit's default: desktop sites on iPad,
+            // mobile on iPhone. `.mobile` would force phone layouts on iPad.
+            preferences.preferredContentMode = model.requestsDesktopSite ? .desktop : .recommended
             guard let url = navigationAction.request.url, !BrowserNavigationPolicy.loadsInWebView(url) else {
                 decisionHandler(.allow, preferences)
                 return

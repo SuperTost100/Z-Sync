@@ -189,6 +189,15 @@ struct MiniBrowserChrome: View {
             }
             .buttonStyle(SquircleButtonStyle())
             .accessibilityLabel(collapsedAddressLabel)
+            // The reload/stop button sits inside this button's label, where
+            // VoiceOver cannot reach it; offer it as an action instead.
+            .accessibilityAction(named: Text(model.isLoading ? "browser.stop" : "browser.reload")) {
+                if model.isLoading {
+                    model.stopLoading()
+                } else {
+                    model.reload()
+                }
+            }
         }
     }
 
