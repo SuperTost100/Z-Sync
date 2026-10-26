@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -48,6 +49,9 @@ internal fun ActionBar(
     /** Gap below the bar: toward the essentials grid at the top placement,
      * toward the screen edge when the bar is the last row. */
     bottomPadding: Dp = 6.dp,
+    /** Pages in "On this phone"; the search field ends in the number. */
+    keptCount: Int = 0,
+    onOpenKeptPages: () -> Unit = {},
 ) {
     val zen = LocalZenColors.current
     // Same 16dp squircle corner as iOS Palette.liftCornerRadius.
@@ -94,7 +98,9 @@ internal fun ActionBar(
             contentAlignment = Alignment.CenterStart,
         ) {
             Row(
-                modifier = Modifier.padding(start = 16.dp, end = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = if (keptCount > 0) 0.dp else 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -111,7 +117,26 @@ internal fun ActionBar(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                if (keptCount > 0) {
+                    // Its own target: the rest of the field still starts a search.
+                    val description = pluralStringResource(R.plurals.browser_kept_count, keptCount, keptCount)
+                    Box(
+                        modifier = Modifier
+                            .clickableNoIndication(onClick = onOpenKeptPages)
+                            .height(44.dp)
+                            .padding(start = 4.dp, end = 9.dp)
+                            .semantics { contentDescription = description },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        KeptCountBadge(
+                            count = keptCount,
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                            side = 26.dp,
+                        )
+                    }
+                }
             }
         }
 

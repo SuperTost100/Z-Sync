@@ -86,6 +86,7 @@ object BrowserSettings {
     const val KEY_SAVE_KIND = "save_tab_kind"
     const val KEY_TOOLBAR_PLACEMENT = "toolbar_placement"
     const val KEY_OPEN_INTO_SEARCH = "open_into_search"
+    const val KEY_KEEP_EVERY_PAGE = "keep_every_page"
 
     fun get(context: Context): Boolean =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -161,6 +162,18 @@ object BrowserSettings {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_OPEN_INTO_SEARCH, enabled)
+            .apply()
+    }
+
+    /** Whether closing the browser keeps the page; off when never chosen. */
+    fun getKeepEveryPage(context: Context): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_KEEP_EVERY_PAGE, false)
+
+    fun setKeepEveryPage(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_KEEP_EVERY_PAGE, enabled)
             .apply()
     }
 }

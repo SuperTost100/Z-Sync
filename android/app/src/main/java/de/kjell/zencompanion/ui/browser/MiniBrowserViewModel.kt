@@ -9,6 +9,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import de.kjell.zencompanion.R
+import de.kjell.zencompanion.data.KeptPage
+import de.kjell.zencompanion.data.KeptPagesPolicy
+import de.kjell.zencompanion.data.KeptPagesStore
+import de.kjell.zencompanion.data.LeaveAction
 import de.kjell.zencompanion.data.SaveKind
 import de.kjell.zencompanion.data.SearchEngines
 import de.kjell.zencompanion.data.SearchSuggestions
@@ -58,6 +62,7 @@ class MiniBrowserViewModel(
     initialTitle: String?,
     spaces: List<ZenSpaces.ZenSpace>,
     currentSpaceId: String,
+    private val keptPages: KeptPagesStore,
     private val suggestionClient: SearchSuggestionClient = LiveSearchSuggestionClient(),
     private val suggestionDebounceMs: Long = SearchSuggestions.DEBOUNCE_MS,
 ) : ViewModel() {
@@ -66,6 +71,12 @@ class MiniBrowserViewModel(
     private var spaces: List<ZenSpaces.ZenSpace> = spaces
     private var currentSpaceId: String = currentSpaceId
     private var launchKey: Int? = null
+    /** Opened from a space's tab: "Keep every page" skips it until the user browses away. */
+    private var openedFromSpace = false
+    /** The address pinned during this visit; a pinned page is not kept on leave. */
+    private var pinnedUrl: String? = null
+    /** The user stopped keeping this page; "Keep every page" leaves it alone. */
+    private var releasedByUser = false
 
     data class State(
         val currentUrl: String = "",
@@ -106,6 +117,8 @@ class MiniBrowserViewModel(
         val findProgress: String? = null,
         /** Suggestions for the text being typed. Empty hides the list. */
         val suggestions: List<String> = emptyList(),
+        /** The "On this phone" entry for this page; null while it is throwaway. */
+        val keptPageId: String? = null,
     ) {
         /** Normal saves always target the space root, so folder rows are hidden. */
         val hideFolders: Boolean get() = saveKind == SaveKind.NORMAL
@@ -168,12 +181,17 @@ class MiniBrowserViewModel(
         initialTitle: String?,
         spaces: List<ZenSpaces.ZenSpace>,
         currentSpaceId: String,
+        keptPageId: String? = null,
+        openedFromSpace: Boolean = false,
     ) {
         if (this.launchKey == launchKey) return
         this.launchKey = launchKey
         this.initialUrl = initialUrl
         this.spaces = spaces
         this.currentSpaceId = currentSpaceId
+        this.openedFromSpace = openedFromSpace
+        pinnedUrl = null
+        releasedByUser = false
         pinBannerJob?.cancel()
         noticeJob?.cancel()
         suggestionJob?.cancel()
@@ -186,6 +204,7 @@ class MiniBrowserViewModel(
             addressText = TextFieldValue(displayHost(initialUrl)),
             pinnedDestination = PinDestination(spaceId = currentSpaceId),
             saveKind = repository.saveKind(),
+            keptPageId = keptPageId?.takeIf { keptPages.page(it) != null },
         )
     }
 
@@ -288,6 +307,7 @@ class MiniBrowserViewModel(
                 )
             }
         }
+        _state.value.keptPageId?.let { keptPages.update(it, url, "") }
         // Leaving the pinned page saves it now instead of letting the banner
         // timer save whatever page is showing later.
         val pinned = pendingPin?.first
@@ -303,6 +323,7 @@ class MiniBrowserViewModel(
         if (_state.value.pageError != null) return
         val usable = PageTitle.usable(title, effectiveUrl()) ?: return
         _state.update { it.copy(currentTitle = usable) }
+        _state.value.keptPageId?.let { keptPages.update(it, effectiveUrl(), usable) }
     }
 
     fun onSiteThemeColorChange(color: Color?) {
@@ -544,6 +565,9 @@ class MiniBrowserViewModel(
         // Still on the pinned page: the live title, or one that loaded after
         // the tap, wins over the one captured when the banner opened.
         val stillOnPage = PageTitle.sameDocument(urlToPin, effectiveUrl())
+        pinnedUrl = urlToPin
+        // A pinned page belongs to the space, so a kept one leaves the list.
+        val keptPinned = _state.value.keptPageId.takeIf { stillOnPage }
 
         viewModelScope.launch {
             val live = if (!stillOnPage) null else try {
@@ -565,6 +589,11 @@ class MiniBrowserViewModel(
                     kind = kind,
                 )
                 if (outcome.fellBackToPinned) showNotice(Notice(R.string.save_fallback_normal_off))
+                keptPinned?.let { id ->
+                    keptPages.remove(id)
+                    KeptPageHistory.forget(id)
+                    if (_state.value.keptPageId == id) _state.update { it.copy(keptPageId = null) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -580,6 +609,58 @@ class MiniBrowserViewModel(
         noticeJob = viewModelScope.launch {
             delay(6_000L)
             _state.update { it.copy(notice = null) }
+        }
+    }
+
+    // MARK: - Kept pages
+
+    /**
+     * Keep Page / Kept. A kept page joins "On this phone"; tapping again makes
+     * it throwaway. Returns whether the page is kept now.
+     */
+    fun toggleKeep(): Boolean {
+        val id = _state.value.keptPageId
+        if (id != null) {
+            keptPages.remove(id)
+            KeptPageHistory.forget(id)
+            releasedByUser = true
+            _state.update { it.copy(keptPageId = null) }
+            return false
+        }
+        return keepPage() != null
+    }
+
+    /** What leaving this page does with it; see [KeptPagesPolicy.onLeave]. */
+    fun leaveAction(webViewCanGoBack: Boolean): LeaveAction {
+        val url = effectiveUrl()
+        return KeptPagesPolicy.onLeave(
+            isKept = _state.value.keptPageId != null,
+            keepEveryPage = repository.keepEveryPage(),
+            url = url,
+            failed = _state.value.pageError != null,
+            pinnedHere = hasPendingPinSave || PageTitle.sameDocument(pinnedUrl, url),
+            releasedHere = releasedByUser,
+            openedFromSpace = openedFromSpace,
+            browsedAway = webViewCanGoBack,
+        )
+    }
+
+    /** Adds this page to "On this phone". Null when there is nothing to keep. */
+    fun keepPage(): String? {
+        _state.value.keptPageId?.let { return it }
+        val url = effectiveUrl()
+        if (url.isEmpty() || _state.value.pageError != null) return null
+        val page = keptPages.keep(url, _state.value.currentTitle)
+        _state.update { it.copy(keptPageId = page.id) }
+        return page.id
+    }
+
+    /** The list changed elsewhere (closed, pinned, Close All): drop a stale id. */
+    fun keptPagesChanged(pages: List<KeptPage>) {
+        val id = _state.value.keptPageId ?: return
+        if (pages.none { it.id == id }) {
+            releasedByUser = true
+            _state.update { it.copy(keptPageId = null) }
         }
     }
 
@@ -678,10 +759,11 @@ class MiniBrowserViewModel(
         private val initialTitle: String?,
         private val spaces: List<ZenSpaces.ZenSpace>,
         private val currentSpaceId: String,
+        private val keptPages: KeptPagesStore,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            MiniBrowserViewModel(repository, initialUrl, initialTitle, spaces, currentSpaceId) as T
+            MiniBrowserViewModel(repository, initialUrl, initialTitle, spaces, currentSpaceId, keptPages) as T
     }
 
     companion object {

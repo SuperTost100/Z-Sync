@@ -66,6 +66,8 @@ fun SpacesBrowserScreen(
     onOpenActivity: () -> Unit = {},
     onDismissShareTip: () -> Unit = {},
     onDismissSyncSetupHint: () -> Unit = {},
+    keptCount: Int = 0,
+    onOpenKeptPages: () -> Unit = {},
 ) {
     val spaces = state.snapshot.spaces
     val currentTheme = spaces.getOrNull(state.selectedIndex)?.theme
@@ -86,6 +88,8 @@ fun SpacesBrowserScreen(
             onOpenAccount = onOpenAccount,
             // Toward the screen edge when the bar is the last row.
             bottomPadding = if (toolbarPlacement == ToolbarPlacement.BOTTOM) 4.dp else 6.dp,
+            keptCount = keptCount,
+            onOpenKeptPages = onOpenKeptPages,
         )
     }
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,8 +30,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.AddToPhotos
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
@@ -62,7 +65,10 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -148,7 +154,7 @@ private val DockInset = 7.dp
 /**
  * Bottom browser chrome (port of iOS `MiniBrowserChrome`), bottom to top:
  *
- *   [tab] [＋] [⋯]    three separate buttons; tab and plus are placeholders
+ *   [tab] [×] [⋯]    kept pages (with their count), close, the page menu
  *   [navigation bar]  back, forward, favicon, title, reload
  *   [menu panel]      only while the menu is open: it grows above the bar
  *
@@ -184,6 +190,10 @@ internal fun MiniBrowserBar(
     onOpenExternal: () -> Unit,
     onPin: () -> Unit,
     barColor: Color,
+    /** Pages in "On this phone"; the tabs button shows the number. */
+    keptCount: Int = 0,
+    onOpenTabs: () -> Unit = {},
+    onToggleKeep: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val zen = LocalZenColors.current
@@ -219,6 +229,7 @@ internal fun MiniBrowserBar(
                     onShare = onShare,
                     onOpenExternal = onOpenExternal,
                     onPin = onPin,
+                    onToggleKeep = onToggleKeep,
                 )
             }
         }
@@ -262,6 +273,8 @@ internal fun MiniBrowserBar(
             Dock(
                 menuOpen = state.menuExpanded,
                 ink = zen.ink,
+                keptCount = keptCount,
+                onOpenTabs = onOpenTabs,
                 onClose = onClose,
                 onToggleMenu = {
                     if (state.menuExpanded) viewModel.collapseMenu() else viewModel.toggleMenu()
@@ -410,6 +423,8 @@ private fun NavGlyph(
 private fun Dock(
     menuOpen: Boolean,
     ink: Color,
+    keptCount: Int,
+    onOpenTabs: () -> Unit,
     onClose: () -> Unit,
     onToggleMenu: () -> Unit,
 ) {
@@ -419,12 +434,18 @@ private fun Dock(
             .padding(horizontal = DockInset),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Placeholder: the page stack arrives with real tabs.
+        // "On this phone". The count replaces the icon once a page is kept.
         DockButton(
             icon = Icons.Outlined.FilterNone,
-            description = stringResource(R.string.browser_tabs),
+            description = if (keptCount > 0) {
+                pluralStringResource(R.plurals.browser_kept_count, keptCount, keptCount)
+            } else {
+                stringResource(R.string.browser_tabs)
+            },
             tint = ink,
-        ) {}
+            count = keptCount,
+            onClick = onOpenTabs,
+        )
 
         Spacer(Modifier.weight(1f))
 
@@ -456,6 +477,7 @@ private fun DockButton(
     tint: Color,
     width: androidx.compose.ui.unit.Dp = DockSide,
     height: androidx.compose.ui.unit.Dp = DockSide,
+    count: Int = 0,
     onClick: () -> Unit,
 ) {
     val zen = LocalZenColors.current
@@ -465,14 +487,38 @@ private fun DockButton(
             .height(height)
             .background(zen.lift, DockShape)
             .border(liftBorder(), DockShape)
-            .barClickable(onClick = onClick),
+            .barClickable(onClick = onClick)
+            .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = description,
-            tint = tint.copy(alpha = 0.8f),
-            modifier = Modifier.size(20.dp),
+        if (count > 0) {
+            KeptCountBadge(count = count, tint = tint)
+        } else {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint.copy(alpha = 0.8f),
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** The kept-page count in a rounded square, the way Chrome and Safari show open tabs. */
+@Composable
+internal fun KeptCountBadge(count: Int, tint: Color, side: Dp = 22.dp) {
+    Box(
+        modifier = Modifier
+            .defaultMinSize(minWidth = side, minHeight = side)
+            .border(2.dp, tint.copy(alpha = 0.85f), RoundedCornerShape(side * 0.32f))
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (count > 99) "99+" else count.toString(),
+            style = ZenType.rounded(if (side > 22.dp) 14 else 13, FontWeight.ExtraBold),
+            color = tint.copy(alpha = 0.85f),
+            maxLines = 1,
         )
     }
 }
@@ -619,9 +665,35 @@ private fun ExpandedMenu(
     onShare: () -> Unit,
     onOpenExternal: () -> Unit,
     onPin: () -> Unit,
+    onToggleKeep: () -> Unit,
 ) {
     val zen = LocalZenColors.current
+    val kept = state.keptPageId != null
     Column(Modifier.fillMaxWidth()) {
+        // Keeps the page in "On this phone"; tap Kept again to make it throwaway.
+        MenuRow(
+            icon = if (kept) Icons.Outlined.CheckBox else Icons.Outlined.AddToPhotos,
+            title = stringResource(if (kept) R.string.browser_kept else R.string.browser_keep_page),
+            tint = when {
+                kept -> zen.coral
+                effectiveUrlAvailable(state) -> zen.ink
+                else -> zen.ink.copy(alpha = 0.38f)
+            },
+            trailing = if (kept) {
+                {
+                    Icon(
+                        imageVector = Icons.Outlined.Check,
+                        contentDescription = null,
+                        tint = zen.coral,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            } else {
+                null
+            },
+            onClick = if (kept || effectiveUrlAvailable(state)) onToggleKeep else null,
+        )
+        RowDivider()
         MenuRow(
             icon = Icons.Outlined.ContentCopy,
             title = stringResource(if (state.copyConfirmed) R.string.browser_copied else R.string.browser_copy_link),
@@ -873,3 +945,7 @@ private fun SiteIcon(effectiveUrl: String) {
         modifier = Modifier.size(18.dp),
     )
 }
+
+/** A page that never loaded or failed has nothing to keep. */
+private fun effectiveUrlAvailable(state: MiniBrowserViewModel.State): Boolean =
+    state.currentUrl.isNotEmpty() && state.pageError == null

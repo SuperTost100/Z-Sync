@@ -12,6 +12,8 @@ import de.kjell.zencompanion.data.AndroidWhatsNewRepository
 import de.kjell.zencompanion.data.BrowserSettings
 import de.kjell.zencompanion.data.DemoCatalog
 import de.kjell.zencompanion.data.EssentialsColumns
+import de.kjell.zencompanion.data.KeptPage
+import de.kjell.zencompanion.data.KeptPagesStore
 import de.kjell.zencompanion.data.SaveKind
 import de.kjell.zencompanion.data.SearchEngine
 import de.kjell.zencompanion.data.SearchEngines
@@ -29,8 +31,11 @@ import de.kjell.zencompanion.sync.SpacesSyncService
 import de.kjell.zencompanion.sync.SyncError
 import de.kjell.zencompanion.sync.SyncedActivityService
 import de.kjell.zencompanion.sync.ZenSpaces
+import de.kjell.zencompanion.ui.browser.KeptPageHistory
+import de.kjell.zencompanion.ui.components.PinDestination
 import de.kjell.zencompanion.ui.screens.FxAWebLogin
 import de.kjell.zencompanion.util.FriendlyError
+import de.kjell.zencompanion.util.PageTitle
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -117,6 +122,8 @@ interface BrowserRepository {
     fun isDemo(): Boolean
     /** Global pinned/normal choice for newly saved tabs. */
     fun saveKind(): SaveKind
+    /** Whether closing the browser keeps the page ("Keep every page"). */
+    fun keepEveryPage(): Boolean
 }
 
 internal class AndroidBrowserRepository(private val context: Context) : BrowserRepository {
@@ -159,6 +166,8 @@ internal class AndroidBrowserRepository(private val context: Context) : BrowserR
     override fun isDemo(): Boolean = AccountStore.isDemo(context)
 
     override fun saveKind(): SaveKind = BrowserSettings.getSaveKind(context)
+
+    override fun keepEveryPage(): Boolean = BrowserSettings.getKeepEveryPage(context)
 }
 
 /** User-facing preferences mirrored into the settings sheet. */
@@ -176,6 +185,8 @@ data class PreferencesState(
     val toolbarPlacement: ToolbarPlacement = ToolbarPlacement.BOTTOM,
     /** Open a new search tab whenever the app comes to the foreground. */
     val openIntoSearch: Boolean = false,
+    /** Closing the browser keeps the page instead of throwing it away. */
+    val keepEveryPage: Boolean = false,
 )
 
 /**
@@ -192,6 +203,7 @@ interface PreferencesRepository {
     fun setSaveKind(kind: SaveKind)
     fun setToolbarPlacement(placement: ToolbarPlacement)
     fun setOpenIntoSearch(enabled: Boolean)
+    fun setKeepEveryPage(enabled: Boolean)
     fun syncSetupHintDismissed(): Boolean
     fun setSyncSetupHintDismissed(dismissed: Boolean)
     fun didShowShareExtensionTip(): Boolean
@@ -214,6 +226,7 @@ internal class AndroidPreferencesRepository(private val context: Context) : Pref
         saveKind = BrowserSettings.getSaveKind(context),
         toolbarPlacement = BrowserSettings.getToolbarPlacement(context),
         openIntoSearch = BrowserSettings.getOpenIntoSearch(context),
+        keepEveryPage = BrowserSettings.getKeepEveryPage(context),
     )
 
     override fun setSearchEngine(engine: SearchEngine) = SearchEngines.set(context, engine)
@@ -236,6 +249,9 @@ internal class AndroidPreferencesRepository(private val context: Context) : Pref
 
     override fun setOpenIntoSearch(enabled: Boolean) =
         BrowserSettings.setOpenIntoSearch(context, enabled)
+
+    override fun setKeepEveryPage(enabled: Boolean) =
+        BrowserSettings.setKeepEveryPage(context, enabled)
 
     override fun syncSetupHintDismissed(): Boolean =
         onboardingPrefs().getBoolean(KEY_DISMISSED_SYNC_SETUP, false)
@@ -443,6 +459,8 @@ class AppViewModel(
         SnapshotCache.deleteCachedSnapshot(appContext)
         SnapshotCache.invalidateMemory()
         FaviconLoader.clear()
+        KeptPagesStore.shared(appContext).clear()
+        KeptPageHistory.clear()
         preferencesRepository.setSyncSetupHintDismissed(false)
         _browser.value = BrowserState()
         _activity.value = ActivityState()
@@ -815,6 +833,41 @@ class AppViewModel(
     fun setOpenIntoSearch(enabled: Boolean) {
         preferencesRepository.setOpenIntoSearch(enabled)
         _preferences.value = _preferences.value.copy(openIntoSearch = enabled)
+    }
+
+    fun setKeepEveryPage(enabled: Boolean) {
+        preferencesRepository.setKeepEveryPage(enabled)
+        _preferences.value = _preferences.value.copy(keepEveryPage = enabled)
+    }
+
+    /**
+     * Pins a kept page from "On this phone". Once it belongs to a space it
+     * leaves the list; a failed write leaves it where it was.
+     */
+    fun pinKeptPage(page: KeptPage, destination: PinDestination, onFailed: (Int) -> Unit) {
+        val kind = if (_browser.value.snapshot.normalTabsCapability == ZenSpaces.NormalTabsCapability.ENABLED) {
+            browserRepository.saveKind()
+        } else {
+            SaveKind.PINNED
+        }
+        viewModelScope.launch {
+            try {
+                browserRepository.addTab(
+                    url = page.url,
+                    title = PageTitle.headline(page.title, page.url),
+                    spaceId = destination.spaceId,
+                    // Normal tabs are never placed in a folder.
+                    folderId = if (kind == SaveKind.NORMAL) null else destination.folderId,
+                    kind = kind,
+                )
+                KeptPagesStore.shared(appContext).remove(page.id)
+                KeptPageHistory.forget(page.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                onFailed(FriendlyError.messageRes(e))
+            }
+        }
     }
 
     /**

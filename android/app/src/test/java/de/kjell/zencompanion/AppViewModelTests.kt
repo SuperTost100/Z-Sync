@@ -740,6 +740,8 @@ private class FakeBrowserRepository(
     override fun isDemo(): Boolean = demo
 
     override fun saveKind(): SaveKind = SaveKind.PINNED
+
+    override fun keepEveryPage(): Boolean = false
 }
 
 private class FakePreferencesRepository : PreferencesRepository {
@@ -781,6 +783,10 @@ private class FakePreferencesRepository : PreferencesRepository {
 
     override fun setOpenIntoSearch(enabled: Boolean) {
         state = state.copy(openIntoSearch = enabled)
+    }
+
+    override fun setKeepEveryPage(enabled: Boolean) {
+        state = state.copy(keepEveryPage = enabled)
     }
 
     override fun syncSetupHintDismissed(): Boolean = syncSetupDismissedFlag

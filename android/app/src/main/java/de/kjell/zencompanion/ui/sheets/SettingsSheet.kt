@@ -80,6 +80,7 @@ fun SettingsSheet(
     onSetSaveKind: (SaveKind) -> Unit,
     onSetToolbarPlacement: (ToolbarPlacement) -> Unit,
     onSetOpenIntoSearch: (Boolean) -> Unit,
+    onSetKeepEveryPage: (Boolean) -> Unit,
     onSignOut: () -> Unit,
     onOpenWhatsNew: () -> Unit,
     onDone: () -> Unit,
@@ -303,6 +304,7 @@ fun SettingsSheet(
                 onSetSaveKind = onSetSaveKind,
                 onSetToolbarPlacement = onSetToolbarPlacement,
                 onSetOpenIntoSearch = onSetOpenIntoSearch,
+                onSetKeepEveryPage = onSetKeepEveryPage,
                 onOpenAdvanced = { showAdvanced = true },
             )
 

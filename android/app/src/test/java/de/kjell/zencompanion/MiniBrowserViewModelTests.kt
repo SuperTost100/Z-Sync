@@ -2,6 +2,8 @@ package de.kjell.zencompanion
 
 import androidx.compose.ui.text.input.TextFieldValue
 import de.kjell.zencompanion.R
+import de.kjell.zencompanion.data.KeptPagesStore
+import de.kjell.zencompanion.data.LeaveAction
 import de.kjell.zencompanion.data.SaveKind
 import de.kjell.zencompanion.data.SearchEngine
 import de.kjell.zencompanion.data.SearchEngines
@@ -13,6 +15,7 @@ import de.kjell.zencompanion.ui.browser.MiniBrowserViewModel
 import de.kjell.zencompanion.ui.browser.SearchSuggestionClient
 import de.kjell.zencompanion.ui.components.PinDestination
 import de.kjell.zencompanion.ui.screens.BrowserPageError
+import java.nio.file.Files
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -51,12 +54,14 @@ class MiniBrowserViewModelTests {
         spaces: List<ZenSpaces.ZenSpace> = listOf(testSpace("s1"), testSpace("s2")),
         suggestionClient: SearchSuggestionClient = ForbiddenSuggestionClient(),
         suggestionDebounceMs: Long = 200,
+        keptPages: KeptPagesStore = KeptPagesStore(Files.createTempDirectory("kept").toFile()),
     ) = MiniBrowserViewModel(
         repository = repository,
         initialUrl = initialUrl,
         initialTitle = "Start",
         spaces = spaces,
         currentSpaceId = "s1",
+        keptPages = keptPages,
         suggestionClient = suggestionClient,
         suggestionDebounceMs = suggestionDebounceMs,
     )
@@ -519,6 +524,162 @@ class MiniBrowserViewModelTests {
         // The text write that follows a pick must not start another lookup.
         assertEquals(1, client.requested.size)
     }
+
+    // MARK: - Kept pages
+
+    private fun keptStore() = KeptPagesStore(Files.createTempDirectory("kept").toFile())
+
+    @Test
+    fun keepPageAddsThePageAndKeptAgainMakesItThrowaway() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val vm = newViewModel(keptPages = store)
+        vm.onCurrentTitleChange("Start page")
+
+        assertTrue(vm.toggleKeep())
+        val id = vm.state.value.keptPageId
+        assertEquals(listOf("https://start.example/"), store.pages.value.map { it.url })
+        assertEquals(id, store.pages.value.single().id)
+        assertEquals(LeaveAction.UPDATE, vm.leaveAction(webViewCanGoBack = false))
+
+        assertFalse(vm.toggleKeep())
+        assertNull(vm.state.value.keptPageId)
+        assertTrue(store.pages.value.isEmpty())
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = false))
+    }
+
+    @Test
+    fun aFailedPageCannotBeKept() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val vm = newViewModel(keptPages = store)
+        vm.onPageLoadFailed(BrowserPageError.HOST_NOT_FOUND, "https://wikipeida.org/")
+
+        assertFalse(vm.toggleKeep())
+        assertTrue(store.pages.value.isEmpty())
+    }
+
+    @Test
+    fun keepEveryPageKeepsAThrowawayPageOnLeave() = runTest(mainDispatcherRule.testDispatcher) {
+        val repository = FakeMiniBrowserRepository(keepEveryPage = false)
+        val vm = newViewModel(repository = repository)
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = true))
+
+        repository.keepEveryPage = true
+        assertEquals(LeaveAction.KEEP, vm.leaveAction(webViewCanGoBack = false))
+    }
+
+    @Test
+    fun aPageTheUserStoppedKeepingIsNotKeptAgainOnLeave() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val vm = newViewModel(repository = FakeMiniBrowserRepository(keepEveryPage = true), keptPages = store)
+        vm.toggleKeep()
+        vm.toggleKeep()
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = true))
+
+        // The same for the current page closed from the list.
+        vm.toggleKeep()
+        store.remove(vm.state.value.keptPageId!!)
+        vm.keptPagesChanged(store.pages.value)
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = true))
+    }
+
+    @Test
+    fun aSpaceTabCountsOnlyOnceTheUserBrowsesAway() = runTest(mainDispatcherRule.testDispatcher) {
+        val vm = newViewModel(repository = FakeMiniBrowserRepository(keepEveryPage = true))
+        vm.startNewLaunch(
+            launchKey = 1,
+            initialUrl = "https://pinned.example/",
+            initialTitle = "Pinned",
+            spaces = listOf(testSpace("s1")),
+            currentSpaceId = "s1",
+            openedFromSpace = true,
+        )
+
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = false))
+        assertEquals(LeaveAction.KEEP, vm.leaveAction(webViewCanGoBack = true))
+    }
+
+    @Test
+    fun aPagePinnedDuringTheVisitIsNotKeptOnLeave() = runTest(mainDispatcherRule.testDispatcher) {
+        val vm = newViewModel(repository = FakeMiniBrowserRepository(keepEveryPage = true))
+        vm.triggerPinBanner()
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = true))
+
+        vm.commitPendingPinSave()
+        runCurrent()
+        assertEquals(LeaveAction.DISCARD, vm.leaveAction(webViewCanGoBack = true))
+    }
+
+    @Test
+    fun aKeptPageFollowsNavigation() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val vm = newViewModel(keptPages = store)
+        vm.toggleKeep()
+
+        vm.onCurrentUrlChange("https://next.example/article")
+        vm.onCurrentTitleChange("An article")
+
+        val page = store.pages.value.single()
+        assertEquals("https://next.example/article", page.url)
+        assertEquals("An article", page.title)
+    }
+
+    @Test
+    fun pinningAKeptPageTakesItOffThePhone() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val repository = FakeMiniBrowserRepository()
+        val vm = newViewModel(repository = repository, keptPages = store)
+        vm.toggleKeep()
+
+        vm.triggerPinBanner()
+        vm.commitPendingPinSave()
+        runCurrent()
+
+        assertEquals(1, repository.added.size)
+        assertTrue(store.pages.value.isEmpty())
+        assertNull(vm.state.value.keptPageId)
+    }
+
+    @Test
+    fun aFailedPinKeepsTheKeptPage() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val repository = FakeMiniBrowserRepository(failure = SyncError.Conflict())
+        val vm = newViewModel(repository = repository, keptPages = store)
+        vm.toggleKeep()
+
+        vm.triggerPinBanner()
+        vm.commitPendingPinSave()
+        runCurrent()
+
+        assertEquals(1, store.pages.value.size)
+        assertEquals(store.pages.value.single().id, vm.state.value.keptPageId)
+    }
+
+    @Test
+    fun closingTheCurrentPageInTheListMakesItThrowaway() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val vm = newViewModel(keptPages = store)
+        vm.toggleKeep()
+        val id = vm.state.value.keptPageId!!
+
+        store.remove(id)
+        vm.keptPagesChanged(store.pages.value)
+
+        assertNull(vm.state.value.keptPageId)
+    }
+
+    @Test
+    fun aLaunchReopensAKeptPageOnlyWhileItIsStillKept() = runTest(mainDispatcherRule.testDispatcher) {
+        val store = keptStore()
+        val page = store.keep("https://kept.example/", "Kept")
+        val vm = newViewModel(keptPages = store)
+
+        vm.startNewLaunch(2, page.url, page.title, listOf(testSpace("s1")), "s1", keptPageId = page.id)
+        assertEquals(page.id, vm.state.value.keptPageId)
+
+        store.remove(page.id)
+        vm.startNewLaunch(3, page.url, page.title, listOf(testSpace("s1")), "s1", keptPageId = page.id)
+        assertNull(vm.state.value.keptPageId)
+    }
 }
 
 private class RecordingSuggestionClient(
@@ -543,6 +704,7 @@ private class FakeMiniBrowserRepository(
     var fallBackToPinned: Boolean = false,
     var failure: Exception? = null,
     var capability: ZenSpaces.NormalTabsCapability = ZenSpaces.NormalTabsCapability.ENABLED,
+    var keepEveryPage: Boolean = false,
 ) : BrowserRepository {
     data class AddedTab(
         val url: String,
@@ -591,4 +753,6 @@ private class FakeMiniBrowserRepository(
     override fun isDemo(): Boolean = false
 
     override fun saveKind(): SaveKind = saveKind
+
+    override fun keepEveryPage(): Boolean = keepEveryPage
 }

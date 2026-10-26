@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Bundle
 import android.os.Message
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
@@ -38,6 +39,8 @@ private const val DesktopUserAgent =
 @Composable
 internal fun MiniBrowserWebView(
     initialUrl: String?,
+    /** A kept page's saved history; when it restores, [initialUrl] is not loaded. */
+    restoreState: Bundle? = null,
     isAddressFocused: Boolean,
     desktopSite: Boolean,
     textZoomPercent: Int,
@@ -267,7 +270,8 @@ internal fun MiniBrowserWebView(
                     SCROLL_BRIDGE_NAME,
                 )
 
-                val loadTarget = formatBrowserInput(initialUrl ?: "")
+                val restored = restoreState?.let { restoreState(it) } != null
+                val loadTarget = if (restored) "" else formatBrowserInput(initialUrl ?: "")
                 if (loadTarget.isNotEmpty()) {
                     if (isWebScheme(Uri.parse(loadTarget).scheme)) {
                         loadUrl(loadTarget)

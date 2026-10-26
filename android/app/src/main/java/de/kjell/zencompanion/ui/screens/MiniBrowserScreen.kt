@@ -86,15 +86,26 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import de.kjell.zencompanion.R
+import de.kjell.zencompanion.data.KeptPage
+import de.kjell.zencompanion.data.KeptPagesStore
+import de.kjell.zencompanion.data.LeaveAction
+import de.kjell.zencompanion.data.SaveKind
 import de.kjell.zencompanion.sync.ZenSpaces
 import de.kjell.zencompanion.ui.BrowserRepository
+import de.kjell.zencompanion.ui.browser.KeptPageHistory
+import de.kjell.zencompanion.ui.browser.KeptPageSnapshot
 import de.kjell.zencompanion.ui.browser.MiniBrowserViewModel
 import de.kjell.zencompanion.ui.browser.ReaderExtractor
+import de.kjell.zencompanion.ui.components.PinDestination
 import de.kjell.zencompanion.ui.components.PinDestinationPicker
 import de.kjell.zencompanion.ui.components.SaveKindMenuButton
 import de.kjell.zencompanion.ui.components.openURLExternally
+import de.kjell.zencompanion.ui.sheets.KeptPagesSheet
 import de.kjell.zencompanion.ui.theme.LocalZenColors
 import de.kjell.zencompanion.ui.theme.ZenTheme
 import de.kjell.zencompanion.ui.theme.ZenType
@@ -127,6 +138,13 @@ fun MiniBrowserScreen(
     browserRepository: BrowserRepository,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The "On this phone" entry this launch reopens; null for a throwaway page. */
+    keptPageId: String? = null,
+    /** Opened from a space's tab rather than a search or the history. */
+    openedFromSpace: Boolean = false,
+    /** Another kept page, or a new throwaway page (null), replaces this one. */
+    onSwitchPage: (KeptPage?) -> Unit = {},
+    onPinKeptPage: (KeptPage, PinDestination) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -140,9 +158,14 @@ fun MiniBrowserScreen(
             initialTitle = initialTitle,
             spaces = allSpaces,
             currentSpaceId = currentSpace.id,
+            keptPages = KeptPagesStore.shared(context),
         ),
     )
     val state by viewModel.state.collectAsState()
+    val keptPages = remember { KeptPagesStore.shared(context) }
+    val kept by keptPages.pages.collectAsState()
+    var showKeptPages by remember { mutableStateOf(false) }
+    LaunchedEffect(kept) { viewModel.keptPagesChanged(kept) }
 
     // Scroll-driven bar: tucks away on the way down, returns on the way up.
     var barHidden by remember { mutableStateOf(false) }
@@ -178,10 +201,52 @@ fun MiniBrowserScreen(
             initialTitle = initialTitle,
             spaces = allSpaces,
             currentSpaceId = currentSpace.id,
+            keptPageId = keptPageId,
+            openedFromSpace = openedFromSpace,
         )
     }
 
     var webView by remember { mutableStateOf<WebView?>(null) }
+    // History to put back when this launch reopens a kept page. Read once: a
+    // recreated screen (theme or font change) reopens its own page instead.
+    val restoredHistory = remember {
+        keptPageId?.takeIf { viewModel.restoredUrl(launchKey) == null }?.let { KeptPageHistory.take(it) }
+    }
+
+    /** Keeps the page's history and picture for the list. */
+    fun captureKeptPage(id: String) {
+        val web = webView ?: return
+        KeptPageHistory.save(id, web)
+        KeptPageSnapshot.capture(web, id, keptPages)
+    }
+
+    /**
+     * The page is being left: closed, or replaced from the list. A kept page
+     * stays with its latest state; a throwaway one goes, unless "Keep every
+     * page" keeps it.
+     */
+    fun leavePage() {
+        viewModel.commitPendingPinSave()
+        val id = when (viewModel.leaveAction(webView?.canGoBack() == true)) {
+            LeaveAction.UPDATE -> viewModel.state.value.keptPageId
+            LeaveAction.KEEP -> viewModel.keepPage()
+            LeaveAction.DISCARD -> null
+        } ?: return
+        captureKeptPage(id)
+    }
+
+    // Leaving the app with a kept page on screen saves it too: the process may
+    // not come back.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                viewModel.state.value.keptPageId?.let { captureKeptPage(it) }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     /// Scroll offset to put back after a reload finishes.
     var reloadScroll by remember { mutableStateOf<Int?>(null) }
     // A crashed renderer takes its WebView with it; a new key builds a fresh one.
@@ -268,7 +333,10 @@ fun MiniBrowserScreen(
                 MiniBrowserViewModel.BackAction.Handled -> Unit
                 MiniBrowserViewModel.BackAction.ClearAddressFocus -> focusManager.clearFocus()
                 MiniBrowserViewModel.BackAction.GoBack -> webView?.goBack()
-                MiniBrowserViewModel.BackAction.Dismiss -> onDismiss()
+                MiniBrowserViewModel.BackAction.Dismiss -> {
+                    leavePage()
+                    onDismiss()
+                }
             }
         }
     }
@@ -383,6 +451,7 @@ fun MiniBrowserScreen(
                         } else {
                             viewModel.restoredUrl(launchKey) ?: initialUrl
                         },
+                        restoreState = restoredHistory,
                         isAddressFocused = state.isAddressFocused,
                         desktopSite = state.requestsDesktopSite,
                         textZoomPercent = (state.pageZoom * 100f).toInt(),
@@ -453,7 +522,7 @@ fun MiniBrowserScreen(
                                 BrowserErrorExit.REVEAL -> viewModel.revealPage(web?.url.orEmpty())
                                 BrowserErrorExit.GO_BACK -> web?.goBack()
                                 BrowserErrorExit.DISMISS -> {
-                                    viewModel.commitPendingPinSave()
+                                    leavePage()
                                     onDismiss()
                                 }
                             }
@@ -533,7 +602,7 @@ fun MiniBrowserScreen(
                         state = state,
                         viewModel = viewModel,
                         onClose = {
-                            viewModel.commitPendingPinSave()
+                            leavePage()
                             onDismiss()
                         },
                         effectiveUrl = effectiveUrl,
@@ -584,6 +653,19 @@ fun MiniBrowserScreen(
                             viewModel.triggerPinBanner()
                         },
                         barColor = barColor,
+                        keptCount = kept.size,
+                        onOpenTabs = {
+                            viewModel.collapseMenu()
+                            // The ring in the list shows this page as it is now.
+                            state.keptPageId?.let { captureKeptPage(it) }
+                            showKeptPages = true
+                        },
+                        onToggleKeep = {
+                            if (viewModel.toggleKeep()) {
+                                Haptics.perform(context, Haptics.Kind.CONFIRM)
+                                viewModel.state.value.keptPageId?.let { captureKeptPage(it) }
+                            }
+                        },
                     )
                 }
             }
@@ -602,6 +684,38 @@ fun MiniBrowserScreen(
                 )
             }
         }
+    }
+
+    if (showKeptPages) {
+        KeptPagesSheet(
+            pages = kept,
+            currentPageId = state.keptPageId,
+            spaces = allSpaces,
+            pinsIntoFolders = !viewModel.allowsNormalTabs || browserRepository.saveKind() == SaveKind.PINNED,
+            onOpen = { page ->
+                showKeptPages = false
+                if (page.id != state.keptPageId) {
+                    leavePage()
+                    onSwitchPage(page)
+                }
+            },
+            onNewPage = {
+                showKeptPages = false
+                leavePage()
+                onSwitchPage(null)
+            },
+            onClose = { page ->
+                keptPages.remove(page.id)
+                KeptPageHistory.forget(page.id)
+            },
+            onCloseAll = {
+                keptPages.clear()
+                KeptPageHistory.clear()
+            },
+            onPin = onPinKeptPage,
+            onShare = { page -> shareUrl(context, page.url, page.title) },
+            onDismiss = { showKeptPages = false },
+        )
     }
 
     // Keep the find bar's matches in sync with the query.
@@ -851,7 +965,7 @@ private fun FindStep(
 
 // MARK: - Share
 
-private fun shareUrl(context: Context, url: String, title: String) {
+internal fun shareUrl(context: Context, url: String, title: String) {
     if (url.isEmpty()) return
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"

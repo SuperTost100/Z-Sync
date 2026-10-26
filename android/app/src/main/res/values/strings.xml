@@ -140,6 +140,8 @@
     <string name="settings_search_engine_error_invalid_url">Enter a valid http:// or https:// URL.</string>
     <string name="settings_search_engine_error_missing_placeholder">Add {query} where the search term should go.</string>
     <string name="settings_open_into_search">Open into search</string>
+    <string name="settings_keep_every_page">Keep every page</string>
+    <string name="settings_keep_every_page_detail">Closing the browser keeps the page</string>
     <string name="settings_external_browser">Open tabs in default browser</string>
     <string name="settings_essentials_grouping">Essentials</string>
     <string name="settings_essentials_grouping_automatic">Automatic</string>
@@ -194,6 +196,24 @@
     <string name="browser_more">More</string>
     <string name="browser_close_menu">Close menu</string>
     <string name="browser_tabs">Tabs</string>
+    <plurals name="browser_kept_count">
+        <item quantity="one">%d kept page</item>
+        <item quantity="other">%d kept pages</item>
+    </plurals>
+    <string name="browser_keep_page">Keep Page</string>
+    <string name="browser_kept">Kept</string>
+    <string name="kept_title">On this phone</string>
+    <string name="kept_new_page">New Page</string>
+    <string name="kept_close_all">Close All</string>
+    <string name="kept_close_all_title">Close all kept pages?</string>
+    <string name="kept_close_all_message">They are removed from this phone. Tabs in your spaces stay.</string>
+    <string name="kept_empty_title">No kept pages</string>
+    <string name="kept_empty_message">Pages close when you leave the browser. To keep one, open the menu and tap Keep Page.</string>
+    <string name="kept_pin_to_space">Pin to space</string>
+    <string name="kept_copy_link">Copy link</string>
+    <string name="kept_close_page">Close page</string>
+    <string name="kept_close_page_named">Close %1$s</string>
+    <string name="kept_current_page">Current page</string>
     <string name="browser_copy_link">Copy Link</string>
     <string name="browser_copied">Copied</string>
     <string name="browser_reader">Reader</string>
