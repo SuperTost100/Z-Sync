@@ -22,7 +22,7 @@ enum MiniBrowserChromeMetrics {
 
 /// Bottom browser chrome: two rows of floating Liquid Glass, bottom to top.
 ///
-///   [tab] [close] [⋯]  the dock: a tabs placeholder, the way out, the menu
+///   [tab] [close] [⋯]  the dock: kept pages, the way out, the menu
 ///   [navigation bar]   the full-width address bar, handed in as `navBar`
 ///   [menu panel]       only while the page menu is open: it grows above the bar
 ///
@@ -41,6 +41,8 @@ struct MiniBrowserChrome<NavBar: View>: View {
     var addressEditing = false
     /// A tapped suggestion goes through the same submit path as typed text.
     var onPickSuggestion: (String) -> Void
+    /// Opens "On this phone".
+    var onOpenTabs: () -> Void = {}
     /// The navigation bar. It stays in place while the menu grows above it.
     @ViewBuilder var navBar: () -> NavBar
 
@@ -103,8 +105,7 @@ struct MiniBrowserChrome<NavBar: View>: View {
 
             if !addressEditing {
                 HStack(spacing: 10) {
-                    // Placeholder: the page stack arrives with real tabs.
-                    dockButton(systemName: "square.on.square", label: "browser.tabs") {}
+                    tabsButton
                     Spacer(minLength: 0)
                     // Closes the mini-browser.
                     closeButton
@@ -193,6 +194,27 @@ struct MiniBrowserChrome<NavBar: View>: View {
         .accessibilityLabel(Text("browser.close"))
     }
 
+    /// "On this phone". The count replaces the icon once a page is kept.
+    private var tabsButton: some View {
+        let count = model.keptPages.pages.count
+        return Button(action: onOpenTabs) {
+            Group {
+                if count > 0 {
+                    KeptCountBadge(count: count)
+                } else {
+                    Image(systemName: "square.on.square")
+                        .font(.system(size: 18, weight: .semibold))
+                }
+            }
+            .foregroundStyle(Palette.ink(scheme))
+            .frame(width: controlSide, height: controlSide)
+            .contentShape(Capsule())
+            .floatingGlassCapsule()
+        }
+        .buttonStyle(GlassPressStyle())
+        .accessibilityLabel(count > 0 ? Text("browser.kept_count \(count)") : Text("browser.tabs"))
+    }
+
     private func dockButton(
         systemName: String,
         label: LocalizedStringKey? = nil,
@@ -219,6 +241,8 @@ struct MiniBrowserChrome<NavBar: View>: View {
     private var expandedContent: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
+                keepRow
+                rowDivider
                 copyRow
                 rowDivider
                 readerRow
@@ -379,6 +403,34 @@ struct MiniBrowserChrome<NavBar: View>: View {
             in: RoundedRectangle(cornerRadius: tileRadius, style: .continuous)
         )
         .glassRim(cornerRadius: tileRadius)
+    }
+
+    /// Keeps the page in "On this phone"; tap Kept again to make it throwaway.
+    private var keepRow: some View {
+        let kept = model.keptPageID != nil
+        return Button {
+            model.toggleKeep()
+            guard let id = model.keptPageID else { return }
+            Task { await model.captureKeptPage(id) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: kept ? "plus.square.fill.on.square.fill" : "plus.square.on.square")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 24)
+                Text(kept ? "browser.kept" : "browser.keep_page")
+                    .font(.system(size: 16, weight: .medium, design: .rounded))
+                Spacer(minLength: 0)
+                if kept {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+            }
+            .foregroundStyle(kept ? Palette.coral(scheme) : Color.primary)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(CardPressStyle())
+        .disabled(!model.canKeep)
     }
 
     private var copyRow: some View {
@@ -753,5 +805,23 @@ struct MiniBrowserTopBar: View {
         }
         .buttonStyle(GlassPressStyle())
         .accessibilityLabel(Text("common.cancel"))
+    }
+}
+
+/// The kept-page count in a rounded square, the way Safari shows open tabs.
+struct KeptCountBadge: View {
+    let count: Int
+    var side: CGFloat = 22
+
+    var body: some View {
+        Text(verbatim: count > 99 ? "99+" : "\(count)")
+            .font(.system(size: side > 22 ? 14 : 13, weight: .heavy, design: .rounded))
+            .lineLimit(1)
+            .padding(.horizontal, 4)
+            .frame(minWidth: side, minHeight: side)
+            .overlay(
+                RoundedRectangle(cornerRadius: side * 0.32, style: .continuous)
+                    .strokeBorder(lineWidth: 2)
+            )
     }
 }

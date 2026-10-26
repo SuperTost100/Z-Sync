@@ -17,6 +17,8 @@ struct MiniBrowserView: View {
     /// browser's capability, like the share sheet.
     var allowsNormalTabs = false
     var onDismiss: () -> Void
+    /// Another kept page, or a new throwaway page (nil), replaces this one.
+    var onSwitchPage: (KeptPage?) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -37,6 +39,9 @@ struct MiniBrowserView: View {
     @State private var keyboardOverlap: CGFloat = 0
     /// Home-indicator inset. The plate fills it; the buttons sit above it.
     @State private var safeBottom: CGFloat = Self.windowSafeBottom()
+    @State private var showKeptPages = false
+    /// Set once the page is on its way out, so a second tap cannot leave twice.
+    @State private var leaving = false
 
     init(
         initialURL: URL?,
@@ -44,16 +49,22 @@ struct MiniBrowserView: View {
         space: ZenSpace,
         allSpaces: [ZenSpace],
         allowsNormalTabs: Bool = false,
-        onDismiss: @escaping () -> Void
+        keptPageID: String? = nil,
+        openedFromSpace: Bool = false,
+        onDismiss: @escaping () -> Void,
+        onSwitchPage: @escaping (KeptPage?) -> Void = { _ in }
     ) {
         self.initialURL = initialURL
         self.space = space
         self.allSpaces = allSpaces
         self.allowsNormalTabs = allowsNormalTabs
         self.onDismiss = onDismiss
+        self.onSwitchPage = onSwitchPage
         _model = State(initialValue: MiniBrowserModel(
             initialURL: initialURL,
-            allowsNormalTabs: allowsNormalTabs
+            allowsNormalTabs: allowsNormalTabs,
+            keptPageID: keptPageID,
+            openedFromSpace: openedFromSpace
         ))
         _startsInSearch = State(initialValue: initialURL == nil)
     }
@@ -172,12 +183,10 @@ struct MiniBrowserView: View {
                     space: space,
                     allSpaces: allSpaces,
                     onToggleMenu: { model.toggleMenu() },
-                    onClose: {
-                        model.commitPendingPinSave()
-                        onDismiss()
-                    },
+                    onClose: { leave(then: onDismiss) },
                     addressEditing: addressEditing,
                     onPickSuggestion: pickSuggestion,
+                    onOpenTabs: openKeptPages,
                     navBar: {
                         MiniBrowserTopBar(
                             model: model,
@@ -264,6 +273,33 @@ struct MiniBrowserView: View {
             .onDisappear {
                 model.commitPendingPinSave()
             }
+            .onChange(of: model.keptPages.pages) { _, _ in
+                model.keptPagesChanged()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                // Leaving the app with a kept page on screen saves it too: the
+                // app may not come back.
+                guard let id = model.keptPageID else { return }
+                Task { await model.captureKeptPage(id) }
+            }
+            .sheet(isPresented: $showKeptPages) {
+                KeptPagesSheet(
+                    currentPageID: model.keptPageID,
+                    spaces: allSpaces,
+                    saveKind: model.allowsNormalTabs ? model.saveKind : .pinned,
+                    onOpen: { page in
+                        showKeptPages = false
+                        guard page.id != model.keptPageID else { return }
+                        leave { onSwitchPage(page) }
+                    },
+                    onNewPage: {
+                        showKeptPages = false
+                        leave { onSwitchPage(nil) }
+                    }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            }
         }
     }
 
@@ -326,6 +362,28 @@ struct MiniBrowserView: View {
 }
 
 private extension MiniBrowserView {
+    /// Leaves the page (see `MiniBrowserModel.leavePage`), then runs `next`.
+    /// The picture for the list is taken before the page goes away.
+    private func leave(then next: @escaping () -> Void) {
+        guard !leaving else { return }
+        leaving = true
+        Task { @MainActor in
+            await model.leavePage()
+            next()
+        }
+    }
+
+    private func openKeptPages() {
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            model.collapseMenu()
+        }
+        Task { @MainActor in
+            // The ring in the list shows this page as it is now.
+            if let id = model.keptPageID { await model.captureKeptPage(id) }
+            showKeptPages = true
+        }
+    }
+
     private func beginAddressEditing() {
         // The full URL is written while the collapsed bar is still a label.
         // The text field is created afterwards, already holding that string.
@@ -344,8 +402,10 @@ private extension MiniBrowserView {
                 model.restoreAddressDisplay()
             }
         } else {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                onDismiss()
+            leave {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    onDismiss()
+                }
             }
         }
     }
@@ -360,7 +420,7 @@ private extension MiniBrowserView {
             onOpenExternally: { model.openCurrentInExternalBrowser() },
             onLeave: {
                 if model.leaveErrorPage() {
-                    onDismiss()
+                    leave(then: onDismiss)
                 }
             }
         )

@@ -282,6 +282,20 @@ final class MiniBrowserModel {
     /// SF Symbol shown with `pinNotice`.
     private(set) var pinNoticeSymbol = "pin.slash.fill"
 
+    // MARK: Kept pages
+    /// The "On this phone" entry for this page; nil while it is throwaway.
+    private(set) var keptPageID: String?
+    /// Opened from a space's tab: "Keep every page" skips it until the user
+    /// browses away.
+    let openedFromSpace: Bool
+    let keptPages: KeptPagesStore
+    /// History to put back when this browser reopens a kept page.
+    @ObservationIgnored private var restoredHistory: Any?
+    /// The address pinned during this visit; a pinned page is not kept on leave.
+    @ObservationIgnored private var pinnedURL: URL?
+    /// The user stopped keeping this page; "Keep every page" leaves it alone.
+    @ObservationIgnored private var releasedByUser = false
+
     /// Scroll offset captured when the reader asked for a reload.
     @ObservationIgnored private var reloadScrollY: CGFloat?
     @ObservationIgnored private var pinBannerDismissTask: Task<Void, Never>?
@@ -309,9 +323,17 @@ final class MiniBrowserModel {
         preferences: PreferencesStoring = AppServices.preferences,
         allowsNormalTabs: Bool = false,
         suggestionClient: SearchSuggestionFetching = LiveSearchSuggestionClient(),
-        suggestionDebounce: Duration = SearchSuggestions.debounce
+        suggestionDebounce: Duration = SearchSuggestions.debounce,
+        keptPageID: String? = nil,
+        openedFromSpace: Bool = false,
+        keptPages: KeptPagesStore = .shared
     ) {
         self.initialURL = initialURL
+        self.keptPages = keptPages
+        let kept = keptPageID.flatMap { keptPages.page($0)?.id }
+        self.keptPageID = kept
+        self.openedFromSpace = openedFromSpace
+        self.restoredHistory = kept.flatMap { KeptPageHistory.state(for: $0) }
         self.pinWriter = pinWriter
         self.urlOpener = urlOpener
         self.searchEngine = searchEngine
@@ -324,7 +346,10 @@ final class MiniBrowserModel {
 
     /// The persisted "save shared tabs as" choice. AppGroup first, standard
     /// fallback; unknown values mean `.pinned`.
-    var saveKind: SaveKind {
+    var saveKind: SaveKind { Self.storedSaveKind(preferences) }
+
+    /// Same read for callers without a browser, such as the home list.
+    static func storedSaveKind(_ preferences: PreferencesStoring) -> SaveKind {
         let key = PreferenceKeys.saveKind
         if let raw = preferences.string(key, scope: .appGroup), let value = SaveKind(rawValue: raw) {
             return value
@@ -372,7 +397,13 @@ final class MiniBrowserModel {
 
     func loadInitial() {
         if let initialURL {
-            load(url: initialURL)
+            if let restoredHistory, let webView {
+                // A kept page comes back with its own Back and Forward.
+                self.restoredHistory = nil
+                webView.interactionState = restoredHistory
+            } else {
+                load(url: initialURL)
+            }
             addressText = BrowserInput.displayText(for: initialURL)
         }
     }
@@ -431,6 +462,84 @@ final class MiniBrowserModel {
         if let url = effectiveURL {
             urlOpener.open(url)
         }
+    }
+
+    // MARK: - Kept pages
+
+    /// Keep Page / Kept. A kept page joins "On this phone"; tapping again
+    /// makes it throwaway. Returns whether the page is kept now.
+    @discardableResult
+    func toggleKeep() -> Bool {
+        if let keptPageID {
+            keptPages.remove(keptPageID)
+            KeptPageHistory.forget(keptPageID)
+            releasedByUser = true
+            self.keptPageID = nil
+            haptics.selectionChanged()
+            return false
+        }
+        guard keepPage() != nil else { return false }
+        haptics.pinSucceeded()
+        return true
+    }
+
+    /// Adds this page to "On this phone". Nil when there is nothing to keep.
+    @discardableResult
+    func keepPage() -> String? {
+        if let keptPageID { return keptPageID }
+        guard pageError == nil, let url = currentURL ?? webView?.url ?? initialURL else { return nil }
+        let page = keptPages.keep(url: url, title: pageTitle)
+        keptPageID = page.id
+        return page.id
+    }
+
+    /// Whether the menu row can keep this page: something has loaded.
+    var canKeep: Bool {
+        keptPageID != nil || (pageError == nil && (currentURL ?? webView?.url ?? initialURL) != nil)
+    }
+
+    /// What leaving this page does with it; see `KeptPagesPolicy.onLeave`.
+    func leaveAction() -> LeaveAction {
+        let url = currentURL ?? webView?.url ?? initialURL
+        return KeptPagesPolicy.onLeave(
+            isKept: keptPageID != nil,
+            keepEveryPage: preferences.bool(PreferenceKeys.keepEveryPage, scope: .standard),
+            url: url,
+            failed: pageError != nil,
+            pinnedHere: hasPendingPinSave || PageTitle.sameDocument(pinnedURL, url),
+            releasedHere: releasedByUser,
+            openedFromSpace: openedFromSpace,
+            browsedAway: webView?.canGoBack ?? canGoBack
+        )
+    }
+
+    /// The page is being left: closed, or replaced from the list. A kept page
+    /// stays with its latest history and picture; a throwaway one goes,
+    /// unless "Keep every page" keeps it.
+    func leavePage() async {
+        commitPendingPinSave()
+        let id: String?
+        switch leaveAction() {
+        case .update: id = keptPageID
+        case .keep: id = keepPage()
+        case .discard: id = nil
+        }
+        guard let id else { return }
+        await captureKeptPage(id)
+    }
+
+    /// Keeps the page's history and picture for the list.
+    func captureKeptPage(_ id: String) async {
+        guard let webView else { return }
+        KeptPageHistory.save(id, from: webView)
+        await KeptPageSnapshot.capture(webView, id: id, store: keptPages)
+    }
+
+    /// The list changed elsewhere (closed, pinned, Close All): drop a stale id.
+    func keptPagesChanged() {
+        guard let keptPageID, keptPages.page(keptPageID) == nil else { return }
+        releasedByUser = true
+        self.keptPageID = nil
     }
 
     // MARK: - Page menu
@@ -634,6 +743,7 @@ final class MiniBrowserModel {
             readerLoading = false
         }
         currentURL = url
+        if let keptPageID, let url { keptPages.update(keptPageID, url: url, title: "") }
     }
 
     /// Keeps a real document title. URL-shaped WebKit titles are ignored so
@@ -641,6 +751,7 @@ final class MiniBrowserModel {
     func adoptPageTitle(_ raw: String) {
         guard let title = PageTitle.usable(raw, url: currentURL ?? webView?.url) else { return }
         pageTitle = title
+        if let keptPageID { keptPages.update(keptPageID, url: currentURL, title: title) }
     }
 
     func currentURLDidChange(_ url: URL?, isAddressFocused: Bool) {
@@ -866,6 +977,9 @@ final class MiniBrowserModel {
         let fallbackTitle = stillOnPage && !pageTitle.isEmpty ? pageTitle : pin.title
         let target = pinnedDestination
         let kind = pinSaveKind
+        pinnedURL = pin.url
+        // A pinned page belongs to the space, so a kept one leaves the list.
+        let keptPinned = stillOnPage ? keptPageID : nil
 
         pinSaveTask = Task(priority: .userInitiated) {
             // document.title is the browser tab name. WebKit's `title` is often
@@ -883,6 +997,11 @@ final class MiniBrowserModel {
                 )
                 if outcome.fellBackToPinned {
                     showPinNotice(String(localized: "share.saved.fallback_pinned"), duration: 6.0)
+                }
+                if let keptPinned {
+                    keptPages.remove(keptPinned)
+                    KeptPageHistory.forget(keptPinned)
+                    if keptPageID == keptPinned { keptPageID = nil }
                 }
             } catch {
                 showPinNotice("\(String(localized: "browser.pin_failed")) \(error.zenUserMessage)", duration: 6.0)

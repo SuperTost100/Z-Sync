@@ -16,7 +16,10 @@ final class MiniBrowserModelTests: XCTestCase {
         preferences: FakePreferences? = nil,
         allowsNormalTabs: Bool = false,
         suggestions: RecordingSuggestionClient = RecordingSuggestionClient(),
-        suggestionDebounce: Duration = .zero
+        suggestionDebounce: Duration = .zero,
+        keptPages: KeptPagesStore? = nil,
+        keptPageID: String? = nil,
+        openedFromSpace: Bool = false
     ) -> (MiniBrowserModel, FakePinWriter) {
         let model = MiniBrowserModel(
             initialURL: initialURL,
@@ -27,9 +30,158 @@ final class MiniBrowserModelTests: XCTestCase {
             preferences: preferences ?? FakePreferences(),
             allowsNormalTabs: allowsNormalTabs,
             suggestionClient: suggestions,
-            suggestionDebounce: suggestionDebounce
+            suggestionDebounce: suggestionDebounce,
+            keptPageID: keptPageID,
+            openedFromSpace: openedFromSpace,
+            keptPages: keptPages ?? keptStore()
         )
         return (model, writer)
+    }
+
+    /// A store of its own per test, so nothing reaches the app's real list.
+    private func keptStore() -> KeptPagesStore {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return KeptPagesStore(directory: url)
+    }
+
+    private func keepEveryPage() -> FakePreferences {
+        let prefs = FakePreferences()
+        prefs.setBool(true, PreferenceKeys.keepEveryPage, scope: .standard)
+        return prefs
+    }
+
+    // MARK: - Kept pages
+
+    func testKeepPageAddsThePageAndKeptAgainMakesItThrowaway() {
+        let store = keptStore()
+        let (model, _) = makeModel(initialURL: URL(string: "https://start.example/"), keptPages: store)
+        model.adoptPageTitle("Start page")
+
+        XCTAssertTrue(model.toggleKeep())
+        XCTAssertEqual(store.pages.map(\.url), [URL(string: "https://start.example/")!])
+        XCTAssertEqual(store.pages.first?.id, model.keptPageID)
+        XCTAssertEqual(model.leaveAction(), .update)
+
+        XCTAssertFalse(model.toggleKeep())
+        XCTAssertNil(model.keptPageID)
+        XCTAssertTrue(store.pages.isEmpty)
+        XCTAssertEqual(model.leaveAction(), .discard)
+    }
+
+    func testAFailedPageCannotBeKept() {
+        let store = keptStore()
+        let (model, _) = makeModel(initialURL: URL(string: "https://start.example/"), keptPages: store)
+        model.webContentProcessDidTerminate()
+
+        XCTAssertFalse(model.toggleKeep())
+        XCTAssertTrue(store.pages.isEmpty)
+    }
+
+    func testKeepEveryPageKeepsAThrowawayPageOnLeave() {
+        let url = URL(string: "https://start.example/")!
+        let (off, _) = makeModel(initialURL: url)
+        XCTAssertEqual(off.leaveAction(), .discard)
+
+        let (on, _) = makeModel(initialURL: url, preferences: keepEveryPage())
+        XCTAssertEqual(on.leaveAction(), .keep)
+    }
+
+    func testASpaceTabCountsOnlyOnceTheUserBrowsesAway() {
+        let (model, _) = makeModel(
+            initialURL: URL(string: "https://pinned.example/"),
+            preferences: keepEveryPage(),
+            openedFromSpace: true
+        )
+        let webView = FakeWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        model.webView = webView
+        XCTAssertEqual(model.leaveAction(), .discard)
+
+        webView.stubbedCanGoBack = true
+        XCTAssertEqual(model.leaveAction(), .keep)
+    }
+
+    func testAPageTheUserStoppedKeepingIsNotKeptAgainOnLeave() {
+        let store = keptStore()
+        let (model, _) = makeModel(
+            initialURL: URL(string: "https://start.example/"),
+            preferences: keepEveryPage(),
+            keptPages: store
+        )
+        model.toggleKeep()
+        model.toggleKeep()
+        XCTAssertEqual(model.leaveAction(), .discard)
+    }
+
+    func testClosingTheCurrentPageInTheListMakesItThrowaway() throws {
+        let store = keptStore()
+        let (model, _) = makeModel(
+            initialURL: URL(string: "https://start.example/"),
+            preferences: keepEveryPage(),
+            keptPages: store
+        )
+        model.toggleKeep()
+        store.remove(try XCTUnwrap(model.keptPageID))
+
+        model.keptPagesChanged()
+        XCTAssertNil(model.keptPageID)
+        XCTAssertEqual(model.leaveAction(), .discard)
+    }
+
+    func testAKeptPageFollowsNavigation() {
+        let store = keptStore()
+        let (model, _) = makeModel(initialURL: URL(string: "https://start.example/"), keptPages: store)
+        model.toggleKeep()
+        let next = URL(string: "https://next.example/article")!
+
+        model.updateCurrentURL(next)
+        model.adoptPageTitle("An article")
+
+        XCTAssertEqual(store.pages.first?.url, next)
+        XCTAssertEqual(store.pages.first?.title, "An article")
+    }
+
+    func testPinningAKeptPageTakesItOffThePhone() async {
+        let store = keptStore()
+        let (model, writer) = makeModel(initialURL: URL(string: "https://start.example/"), keptPages: store)
+        model.toggleKeep()
+
+        model.triggerPinBanner(spaces: [space("s1")], fallbackSpace: space("s1"))
+        model.commitPendingPinSave()
+        await model.waitForPinSave()
+
+        XCTAssertEqual(writer.saved.count, 1)
+        XCTAssertTrue(store.pages.isEmpty)
+        XCTAssertNil(model.keptPageID)
+        // A page pinned during the visit is not kept again on leave.
+        XCTAssertEqual(model.leaveAction(), .discard)
+    }
+
+    func testAFailedPinKeepsTheKeptPage() async {
+        let store = keptStore()
+        let writer = FakePinWriter()
+        writer.error = URLError(.notConnectedToInternet)
+        let (model, _) = makeModel(initialURL: URL(string: "https://start.example/"), writer: writer, keptPages: store)
+        model.toggleKeep()
+
+        model.triggerPinBanner(spaces: [space("s1")], fallbackSpace: space("s1"))
+        model.commitPendingPinSave()
+        await model.waitForPinSave()
+
+        XCTAssertEqual(store.pages.count, 1)
+        XCTAssertEqual(store.pages.first?.id, model.keptPageID)
+    }
+
+    func testAModelReopensAKeptPageOnlyWhileItIsStillKept() {
+        let store = keptStore()
+        let page = store.keep(url: URL(string: "https://kept.example/")!, title: "Kept")
+
+        let (reopened, _) = makeModel(initialURL: page.url, keptPages: store, keptPageID: page.id)
+        XCTAssertEqual(reopened.keptPageID, page.id)
+
+        store.remove(page.id)
+        let (gone, _) = makeModel(initialURL: page.url, keptPages: store, keptPageID: page.id)
+        XCTAssertNil(gone.keptPageID)
     }
 
     private func preferences(saveKind: SaveKind) -> FakePreferences {

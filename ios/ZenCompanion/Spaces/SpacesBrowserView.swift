@@ -7,6 +7,10 @@ struct BrowserTabSession: Identifiable {
     var url: URL?
     var initialTitle: String?
     var space: ZenSpace
+    /// The "On this phone" entry this session reopens; nil for a throwaway page.
+    var keptPageID: String?
+    /// Opened from one of the space's own tabs.
+    var openedFromSpace = false
 }
 
 /// The whole app: swipe between spaces (pinned tabs + folders per space),
@@ -26,6 +30,7 @@ struct SpacesBrowserView: View {
         case activity
         case syncSetup
         case whatsNew
+        case keptPages
 
         var id: String {
             switch self {
@@ -33,6 +38,7 @@ struct SpacesBrowserView: View {
             case .activity: return "activity"
             case .syncSetup: return "syncSetup"
             case .whatsNew: return "whatsNew"
+            case .keptPages: return "keptPages"
             }
         }
 
@@ -275,17 +281,36 @@ struct SpacesBrowserView: View {
                 WhatsNewSheet(release: whatsNew.release, scheme: effectiveScheme)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
+            case .keptPages:
+                KeptPagesSheet(
+                    spaces: model.snapshot.spaces,
+                    saveKind: model.snapshot.normalTabsCapability.allowsNormalTabs
+                        ? MiniBrowserModel.storedSaveKind(AppServices.preferences)
+                        : .pinned,
+                    onOpen: { page in openKeptPage(page) },
+                    onNewPage: { openNewTab(in: model.activeSpace) }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
             }
         }
-        .fullScreenCover(item: $browserSession) { session in
-            miniBrowser(session, spaces: model.snapshot.spaces)
-                .onDisappear {
-                    // A pin inside the mini-browser fired while it was up.
-                    if pendingStaleReload {
-                        pendingStaleReload = false
-                        Task { await model.reload() }
-                    }
-                }
+        // Not `item:`: a switch between kept pages replaces the session, and
+        // that must swap the page inside the cover instead of closing it.
+        .fullScreenCover(isPresented: Binding(
+            get: { browserSession != nil },
+            set: { if !$0 { browserSession = nil } }
+        )) {
+            if let session = browserSession {
+                miniBrowser(session, spaces: model.snapshot.spaces)
+                    // A new web view with that page's own history.
+                    .id(session.id)
+            }
+        }
+        .onChange(of: browserSession == nil) { _, closed in
+            // A pin inside the mini-browser fired while it was up.
+            guard closed, pendingStaleReload else { return }
+            pendingStaleReload = false
+            Task { await model.reload() }
         }
         .task { await model.initialLoad() }
         .task {
@@ -406,7 +431,7 @@ struct SpacesBrowserView: View {
                 Spacer(minLength: 0)
             }
             .padding(.leading, 16)
-            .padding(.trailing, 12)
+            .padding(.trailing, keptCount > 0 ? 52 : 12)
             .frame(height: 44)
             .background(
                 Palette.lift(scheme),
@@ -417,7 +442,24 @@ struct SpacesBrowserView: View {
         }
         .buttonStyle(SquircleButtonStyle())
         .accessibilityLabel(Text("browser.web_placeholder"))
+        .overlay(alignment: .trailing) {
+            if keptCount > 0 {
+                // Its own target: the rest of the field still starts a search.
+                Button {
+                    activeSheet = .keptPages
+                } label: {
+                    KeptCountBadge(count: keptCount, side: 26)
+                        .foregroundStyle(Palette.ink(scheme).opacity(0.8))
+                        .frame(width: 48, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(SquircleButtonStyle())
+                .accessibilityLabel(Text("browser.kept_count \(keptCount)"))
+            }
+        }
     }
+
+    private var keptCount: Int { KeptPagesStore.shared.pages.count }
 
     private func openTab(_ tab: ZenTab, in space: ZenSpace) {
         guard let url = URL(string: tab.url) else { return }
@@ -425,7 +467,16 @@ struct SpacesBrowserView: View {
             ExternalBrowser.open(url)
             return
         }
-        presentBrowser(url: url, title: tab.displayTitle, space: space)
+        presentBrowser(url: url, title: tab.displayTitle, space: space, openedFromSpace: true)
+    }
+
+    /// A kept page always opens here: it lives in this app, not in a browser.
+    private func openKeptPage(_ page: KeptPage?) {
+        guard let page else {
+            openNewTab(in: model.activeSpace)
+            return
+        }
+        presentBrowser(url: page.url, title: page.title, space: model.activeSpace, keptPageID: page.id)
     }
 
     private func openNewTab(in space: ZenSpace) {
@@ -434,8 +485,20 @@ struct SpacesBrowserView: View {
 
     /// Opens the browser as a page. A sheet that is already up has to go
     /// first: SwiftUI will not present a full-screen cover over one.
-    private func presentBrowser(url: URL?, title: String?, space: ZenSpace) {
-        let session = BrowserTabSession(url: url, initialTitle: title, space: space)
+    private func presentBrowser(
+        url: URL?,
+        title: String?,
+        space: ZenSpace,
+        keptPageID: String? = nil,
+        openedFromSpace: Bool = false
+    ) {
+        let session = BrowserTabSession(
+            url: url,
+            initialTitle: title,
+            space: space,
+            keptPageID: keptPageID,
+            openedFromSpace: openedFromSpace
+        )
         guard activeSheet != nil else {
             browserSession = session
             return
@@ -455,7 +518,10 @@ struct SpacesBrowserView: View {
             space: session.space,
             allSpaces: spaces,
             allowsNormalTabs: model.snapshot.normalTabsCapability.allowsNormalTabs,
-            onDismiss: { browserSession = nil }
+            keptPageID: session.keptPageID,
+            openedFromSpace: session.openedFromSpace,
+            onDismiss: { browserSession = nil },
+            onSwitchPage: { page in openKeptPage(page) }
         )
     }
 

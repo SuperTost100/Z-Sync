@@ -182,6 +182,32 @@ struct SettingsSheet: View {
                             .tint(Palette.coral(scheme))
                             .padding(.horizontal, 16)
                             .frame(minHeight: 54)
+
+                            Rectangle()
+                                .fill(Palette.ink(scheme).opacity(0.15))
+                                .frame(height: 0.5)
+                                .padding(.leading, 44)
+
+                            Toggle(isOn: $model.keepEveryPage) {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("settings.keep_every_page")
+                                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                                        Text("settings.keep_every_page_detail")
+                                            .font(.system(size: 13, weight: .regular, design: .rounded))
+                                            .foregroundStyle(Palette.ink(scheme).opacity(0.55))
+                                    }
+                                } icon: {
+                                    Image(systemName: "plus.square.on.square")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Palette.ink(scheme).opacity(0.6))
+                                }
+                                .foregroundStyle(Palette.ink(scheme))
+                            }
+                            .tint(Palette.coral(scheme))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .frame(minHeight: 54)
                         }
                         .liftCard(scheme)
 

@@ -262,6 +262,48 @@
         }
       }
     },
+    "browser.keep_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Page"
+          }
+        }
+      }
+    },
+    "browser.kept": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kept"
+          }
+        }
+      }
+    },
+    "browser.kept_count %lld": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld kept page"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld kept pages"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "browser.open_in_browser": {
       "localizations": {
         "en": {
@@ -690,6 +732,126 @@
         }
       }
     },
+    "kept.close_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close All"
+          }
+        }
+      }
+    },
+    "kept.close_all_message": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "They are removed from this phone. Tabs in your spaces stay."
+          }
+        }
+      }
+    },
+    "kept.close_all_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close all kept pages?"
+          }
+        }
+      }
+    },
+    "kept.close_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close page"
+          }
+        }
+      }
+    },
+    "kept.close_page_named %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close %@"
+          }
+        }
+      }
+    },
+    "kept.copy_link": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy link"
+          }
+        }
+      }
+    },
+    "kept.current_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current page"
+          }
+        }
+      }
+    },
+    "kept.empty_message": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pages close when you leave the browser. To keep one, open the menu and tap Keep Page."
+          }
+        }
+      }
+    },
+    "kept.empty_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No kept pages"
+          }
+        }
+      }
+    },
+    "kept.new_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Page"
+          }
+        }
+      }
+    },
+    "kept.pin_to_space": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pin to space"
+          }
+        }
+      }
+    },
+    "kept.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On this phone"
+          }
+        }
+      }
+    },
     "legal.feedback": {
       "localizations": {
         "en": {
@@ -756,6 +918,26 @@
     },
     "PREFERENCES": {},
     "Settings": {},
+    "settings.keep_every_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep every page"
+          }
+        }
+      }
+    },
+    "settings.keep_every_page_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Closing the browser keeps the page"
+          }
+        }
+      }
+    },
     "settings.whats_new": {
       "localizations": {
         "en": {

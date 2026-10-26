@@ -17,6 +17,7 @@ enum PreferenceKeys {
     static let saveKind = "save_kind"
     static let toolbarPlacement = "toolbar_placement"
     static let openIntoSearch = "open_into_search"
+    static let keepEveryPage = "keep_every_page"
     static let essentialsColumns = "essentials_columns"
     /// Marketing version whose What's New sheet was already presented.
     static let whatsNewShownVersion = "whatsNewShownVersion"
@@ -236,6 +237,8 @@ struct LiveSessionSigningOut: SessionSigningOut {
         }
         AccountStore.clear()
         FaviconLoader.shared.removeAll()
+        KeptPagesStore.shared.removeAll()
+        KeptPageHistory.removeAll()
         SpacesSyncService.deleteCachedSnapshot()
         NotificationCenter.default.post(name: .zenCompanionSignedOut, object: nil)
     }

@@ -25,6 +25,17 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertTrue(makeModel(prefs).openIntoSearch)
     }
 
+    func testKeepEveryPageIsOffByDefaultAndPersists() {
+        let prefs = FakePreferences()
+        let model = makeModel(prefs)
+        XCTAssertFalse(model.keepEveryPage)
+
+        model.keepEveryPage = true
+
+        XCTAssertTrue(prefs.bool(PreferenceKeys.keepEveryPage, scope: .standard))
+        XCTAssertTrue(makeModel(prefs).keepEveryPage)
+    }
+
     // MARK: - Toolbar placement
 
     func testToolbarPlacementDefaultsToBottom() {
