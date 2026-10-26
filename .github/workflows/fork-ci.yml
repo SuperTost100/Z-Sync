@@ -78,5 +78,5 @@ jobs:
           echo "---- errors and failing tests ----"
           grep -E "error:|: error|Test Case .* failed|XCTAssert|Fatal error" xcodebuild.log | head -80 || true
           echo "---- tests of the branch under test ----"
-          grep -E "Test Suite '(BlockListTests|ContentBlockingTests)'|compiled in" xcodebuild.log | head -40 || true
+          grep -E "Test Suite '[A-Za-z]+Tests' (passed|failed)" xcodebuild.log | sort -u | head -80 || true
           exit $status
